@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#f6f1e9">
+<title>MoodOS — experience orchestration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">
+    <div class="nav-logo">
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5"/><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zm0-1.5a8 8 0 110 16A8 8 0 018 0z" opacity=".4"/></svg>
+    </div>
+    <div>
+      <div class="nav-title">MoodOS</div>
+      <div class="nav-sub">context-aware experience orchestration</div>
+    </div>
+  </div>
+  <div class="nav-chips" id="keys">checking agents…</div>
+  <div class="nav-actions">
+    <a class="btn-connect" href="/spotify/login">Connect Spotify</a>
+    <button class="btn-memories" id="memories-btn" type="button">Memories</button>
+    <button class="btn-journal" id="journal-btn" type="button">Journal</button>
+    <button class="btn-forget" id="forget" type="button">Forget my memory</button>
+  </div>
+</nav>
+
+<main>
+
+  <div class="location-bar">
+    <div class="loc-dot"></div>
+    <span id="here">Asking for live location…</span>
+  </div>
+
+  <div class="input-section">
+    <div class="input-label">Ask MoodOS — a question or an evening to plan</div>
+    <div class="input-card">
+      <textarea id="msg">I had a really stressful day and don't want to stay at home tonight. I'm going alone, have ₹1200, and around 5 hours. I want the evening to take me from stressed to happy and relaxed.</textarea>
+      <div class="input-footer">
+        <input id="loc" class="input-field" type="text" placeholder="Your city / area (optional) — e.g. Mumbai, Bandra" autocomplete="off">
+        <select id="prompt" class="select-field">
+          <option value="">workflow (optional)</option>
+          <option>/mood-night</option>
+          <option>/stress-relief</option>
+          <option>/rainy-day</option>
+          <option>/date-night</option>
+          <option>/study-session</option>
+          <option>/weekend-plan</option>
+        </select>
+        <button id="go" class="btn-send" type="button">Send</button>
+      </div>
+    </div>
+    <div class="input-hint">Questions like “where am I?” or “what’s the weather?” get a short reply. Mood + budget + time still builds a plan with distances.</div>
+  </div>
+
+  <div id="status" class="status hidden"></div>
+  <div id="result" class="hidden"></div>
+
+</main>
+
+<!-- Memories modal -->
+<div class="modal-overlay hidden" id="memories-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">Your memories</div>
+        <div class="modal-sub">What MoodOS remembers about you — editable, deletable, stored in Mem0</div>
+      </div>
+      <button class="modal-close" id="memories-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="memories-list">
+      <div class="modal-empty">Loading…</div>
+    </div>
+    <div class="modal-foot">
+      <span class="modal-hint">Memories inform your plans. Edit wording, delete anything you don't want kept.</span>
+    </div>
+  </div>
+</div>
+
+<!-- Journal modal -->
+<div class="modal-overlay hidden" id="journal-modal">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">Mood Journal</div>
+        <div class="modal-sub">Practical trends from every evening MoodOS has planned</div>
+      </div>
+      <button class="modal-close" id="journal-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="journal-body">
+      <div class="modal-empty">Loading…</div>
+    </div>
+    <div class="modal-foot">
+      <span class="modal-hint" id="journal-foot-hint">Entries are written automatically each time MoodOS plans an evening.</span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

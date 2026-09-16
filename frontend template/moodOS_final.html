@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoodOS — experience orchestration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --sand:      #F5F0E8;
+    --sand-mid:  #EDE6D6;
+    --sand-deep: #D6CAB2;
+    --cream:     #FBF7F0;
+    --bark:      #3D2B1A;
+    --bark-mid:  #6B4C30;
+    --amber:     #C4883A;
+    --amber-lt:  #F0D9B0;
+    --amber-dk:  #7A4F18;
+    --terr:      #A0522D;
+    --terr-lt:   #E8D0BC;
+    --stone:     #8A7E6E;
+    --stone-lt:  #C8BFB0;
+    --text-h:    #2A1A0A;
+    --text-b:    #3D2B1A;
+    --text-s:    #6B5840;
+    --text-m:    #9A8A78;
+    --radius-sm: 6px;
+    --radius-md: 12px;
+    --music-lt:  #E8E0F0;
+    --music-dk:  #5A3A7A;
+    --green:     #3A6B4A;
+    --green-lt:  #D4EDE0;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    background: var(--sand);
+    color: var(--text-b);
+    line-height: 1.6;
+  }
+
+  main {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  /* ======== NAV ======== */
+  .nav {
+    background: var(--cream);
+    border-bottom: 1px solid var(--sand-deep);
+    padding: 18px 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .nav-brand { display: flex; align-items: center; gap: 10px; }
+  .nav-logo {
+    width: 34px; height: 34px;
+    background: var(--bark);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .nav-logo svg { width: 17px; height: 17px; fill: var(--amber); }
+  .nav-title { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--text-h); }
+  .nav-sub { font-size: 11px; color: var(--text-m); letter-spacing: 0.04em; }
+  .nav-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+  .chip {
+    font-size: 11px; padding: 4px 10px;
+    border: 1px solid var(--sand-deep);
+    border-radius: 20px;
+    color: var(--text-s);
+    background: var(--sand);
+    white-space: nowrap;
+  }
+  .chip.on {
+    background: var(--amber-lt);
+    border-color: var(--amber);
+    color: var(--amber-dk);
+  }
+  .btn-connect {
+    font-size: 12px; font-weight: 500;
+    padding: 6px 14px;
+    border: 1px solid var(--amber);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--amber-dk);
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+  .btn-connect:hover { background: var(--amber-lt); }
+
+  /* ======== LOCATION BAR ======== */
+  .loc-bar {
+    display: flex; align-items: center;
+    gap: 8px;
+    width: fit-content;
+    max-width: 100%;
+    padding: 8px 16px;
+    background: var(--cream);
+    border: 1px solid var(--sand-deep);
+    border-radius: 20px;
+    font-size: 12px;
+    color: var(--text-m);
+    margin-bottom: 32px;
+  }
+  .loc-text { white-space: nowrap; }
+  .loc-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--amber);
+    flex-shrink: 0;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.4); }
+  }
+
+  /* ======== INPUT ======== */
+  .input-label {
+    font-family: 'DM Serif Display', serif;
+    font-style: italic;
+    font-size: 22px;
+    color: var(--text-h);
+    margin-bottom: 14px;
+  }
+  .input-card {
+    background: var(--cream);
+    border: 1px solid var(--sand-deep);
+    border-radius: var(--radius-md);
+    padding: 20px;
+  }
+  .input-card textarea {
+    width: 100%;
+    min-height: 120px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 14px;
+    color: var(--text-b);
+    line-height: 1.7;
+    resize: none;
+  }
+  .input-card textarea::placeholder { color: var(--text-m); }
+  .input-divider { border: 0; border-top: 1px solid var(--sand-mid); margin: 12px 0 0; }
+  .input-row {
+    display: flex; align-items: center;
+    gap: 10px; flex-wrap: wrap;
+    padding-top: 12px; margin-top: 12px;
+  }
+  .input-row .city {
+    flex: 1 1 160px;
+    min-width: 140px;
+    font: 400 12px 'DM Sans', sans-serif;
+    padding: 7px 12px;
+    border: 1px solid var(--sand-deep);
+    border-radius: var(--radius-sm);
+    background: var(--sand);
+    color: var(--text-s);
+    outline: 0;
+  }
+  .input-row .city:focus { border-color: var(--amber); }
+  .input-row select {
+    font: 400 12px 'DM Sans', sans-serif;
+    padding: 7px 12px;
+    border: 1px solid var(--sand-deep);
+    border-radius: var(--radius-sm);
+    background: var(--sand);
+    color: var(--text-s);
+    outline: 0;
+    cursor: pointer;
+  }
+  .btn-send {
+    margin-left: auto;
+    font: 500 13px 'DM Sans', sans-serif;
+    padding: 7px 22px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--bark);
+    color: var(--amber-lt);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-send:hover { background: var(--bark-mid); }
+  .input-hint {
+    font-size: 11px;
+    color: var(--text-m);
+    margin-top: 10px;
+    line-height: 1.5;
+  }
+
+  /* ======== MOOD ARC ======== */
+  .mood-arc { margin-bottom: 40px; }
+  .arc-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .arc-current { font-size: 13px; font-weight: 500; color: var(--terr); }
+  .arc-desired { font-size: 13px; font-weight: 500; color: var(--amber-dk); }
+  .arc-body { position: relative; height: 64px; }
+  .arc-line {
+    position: absolute;
+    top: 50%; left: 0; right: 0;
+    height: 3px;
+    transform: translateY(-50%);
+    background: var(--sand-deep);
+    border-radius: 2px;
+  }
+  .arc-fill {
+    position: absolute;
+    top: 50%; left: 0;
+    height: 3px;
+    transform: translateY(-50%);
+    background: var(--amber);
+    border-radius: 2px;
+  }
+  .arc-milestone { position: absolute; top: 0; bottom: 0; width: 0; }
+  .arc-dot {
+    position: absolute;
+    top: 50%; left: 0;
+    width: 10px; height: 10px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--amber);
+    border: 2px solid var(--cream);
+  }
+  .arc-label {
+    position: absolute;
+    left: 0;
+    font: 400 11px 'DM Sans', sans-serif;
+    color: var(--text-s);
+    white-space: nowrap;
+    transform: translateX(-50%);
+  }
+  .arc-label.above { bottom: calc(50% + 14px); }
+  .arc-label.below { top: calc(50% + 14px); }
+
+  /* ======== BUNDLE HEADER ======== */
+  .bundle-header { margin-bottom: 28px; }
+  .bundle-eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 6px;
+  }
+  .bundle-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 28px;
+    color: var(--text-h);
+    margin: 0 0 8px;
+  }
+  .bundle-narrative {
+    font-size: 13px;
+    color: var(--text-s);
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  /* ======== META GRID ======== */
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 1px;
+    background: var(--sand-deep);
+    border: 1px solid var(--sand-deep);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin-bottom: 40px;
+  }
+  .meta-cell { background: var(--cream); padding: 14px 16px; }
+  .meta-label {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-m);
+    margin-bottom: 6px;
+  }
+  .meta-value {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-h);
+  }
+  .meta-value.mood { color: var(--terr); }
+  .meta-value.desired { color: var(--amber-dk); }
+  .meta-value.small { font-size: 12px; line-height: 1.4; }
+
+  /* ======== TIMELINE ======== */
+  .timeline { position: relative; }
+  .timeline::before {
+    content: "";
+    position: absolute;
+    left: 22px;
+    top: 12px;
+    bottom: 12px;
+    width: 1px;
+    background: var(--sand-deep);
+    z-index: 0;
+  }
+  .t-row {
+    display: flex;
+    gap: 20px;
+    position: relative;
+    margin-bottom: 8px;
+  }
+  .t-node {
+    flex-shrink: 0;
+    z-index: 1;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .t-node.activity {
+    width: 44px; height: 44px;
+    background: var(--bark);
+    color: var(--amber-lt);
+    font-family: 'DM Serif Display', serif;
+    font-size: 16px;
+  }
+  .t-node.travel {
+    width: 36px; height: 36px;
+    margin-left: 4px;
+    background: var(--sand-mid);
+    border: 1px solid var(--sand-deep);
+    color: var(--stone);
+  }
+  .t-arrow { display: block; }
+  .t-card {
+    flex: 1;
+    min-width: 0;
+    background: var(--cream);
+    border: 1px solid var(--sand-deep);
+    border-radius: var(--radius-md);
+    padding: 18px 20px 28px;
+  }
+  .t-card.travel-card {
+    background: var(--sand);
+    border: 1px dashed var(--sand-deep);
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+  .t-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .t-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 18px;
+    color: var(--text-h);
+    margin: 0 0 4px;
+  }
+  .t-meta { font-size: 11px; color: var(--text-m); }
+  .badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 20px;
+    padding: 3px 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .badge.walk  { background: var(--terr-lt);  color: var(--terr); }
+  .badge.cafe  { background: var(--amber-lt); color: var(--amber-dk); }
+  .badge.place { background: var(--sand-mid); color: var(--stone); }
+  .badge.movie { background: var(--sand-mid); color: var(--bark-mid); }
+  .badge.music { background: var(--music-lt); color: var(--music-dk); }
+  .t-reason {
+    font-size: 13px;
+    color: var(--text-s);
+    line-height: 1.55;
+    margin: 12px 0 0;
+  }
+  .t-warn {
+    display: block;
+    margin-top: 12px;
+    background: var(--terr-lt);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-size: 11px;
+    color: var(--terr);
+    line-height: 1.5;
+  }
+  .t-card-title { font-size: 12px; font-weight: 500; color: var(--text-s); }
+  .t-card-sub { font-size: 11px; color: var(--text-m); margin-top: 2px; }
+
+  /* ======== PLAYLIST ======== */
+  .pl-divider { border: 0; border-top: 1px solid var(--sand-mid); margin: 14px 0 12px; }
+  .pl-head {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-m);
+    margin-bottom: 10px;
+  }
+  .pl-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .pl-track { display: flex; align-items: center; gap: 10px; }
+  .pl-play { flex-shrink: 0; }
+  .pl-title { font-size: 13px; font-weight: 500; color: var(--text-b); }
+  .pl-dash { font-size: 12px; color: var(--text-m); }
+  .pl-artist { font-size: 12px; color: var(--text-m); }
+  .pl-dur { margin-left: auto; font-size: 11px; color: var(--text-m); flex-shrink: 0; }
+  .pl-summary {
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px solid var(--sand-mid);
+    margin-top: 10px;
+    padding-top: 10px;
+    font-size: 11px;
+    color: var(--text-m);
+  }
+  .btn-confirm {
+    margin-top: 14px;
+    background: var(--bark);
+    color: var(--amber-lt);
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 9px 20px;
+    font: 500 13px 'DM Sans', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-confirm:hover { background: var(--bark-mid); }
+  .btn-confirm.done {
+    background: var(--green);
+    color: var(--green-lt);
+    cursor: default;
+  }
+
+  /* ======== SUMMARY BAR ======== */
+  .summary-bar {
+    background: var(--bark);
+    color: var(--amber-lt);
+    border-radius: var(--radius-md);
+    padding: 18px 22px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin: 6px 0 34px;
+  }
+  .summary-label {
+    font-size: 11px;
+    color: var(--stone-lt);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .summary-total { font-family: 'DM Serif Display', serif; font-size: 22px; }
+  .summary-note { font-size: 12px; color: var(--stone-lt); }
+
+  /* ======== TOOLS ======== */
+  .tools {
+    background: var(--cream);
+    border: 1px solid var(--sand-deep);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin-bottom: 28px;
+  }
+  .tools summary {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 14px 18px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-s);
+    list-style: none;
+  }
+  .tools summary::-webkit-details-marker { display: none; }
+  .tools .summary-label { flex: 1; }
+  .tools .chev { color: var(--stone); transition: transform 0.2s; }
+  .tools[open] .chev { transform: rotate(180deg); }
+  .tools-table { width: 100%; border-collapse: collapse; }
+  .tools-table tr { border-top: 1px solid var(--sand-mid); }
+  .tools-table td {
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--text-b);
+  }
+  .tools-table td:first-child { color: var(--text-s); font-weight: 500; }
+  .tools-table td:nth-child(2) { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--text-m); }
+  .tools-table td:last-child { color: var(--text-m); text-align: right; }
+
+  /* ======== ACTIONS ======== */
+  .action-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn-action {
+    font: 500 12px 'DM Sans', sans-serif;
+    padding: 10px 18px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-action.primary {
+    background: var(--amber);
+    color: var(--cream);
+    border: 1px solid var(--amber);
+  }
+  .btn-action.ghost {
+    background: transparent;
+    color: var(--text-s);
+    border: 1px solid var(--sand-deep);
+  }
+  .btn-action.ghost:hover { background: var(--sand-mid); }
+
+  /* ======== RESPONSIVE ======== */
+  @media (max-width: 900px) {
+    .meta-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 700px) {
+    .nav { padding: 16px 24px; }
+    .t-card { padding: 14px 16px 24px; }
+  }
+  @media (max-width: 460px) {
+    .meta-grid { grid-template-columns: repeat(2, 1fr); }
+    .nav-sub { display: none; }
+    .btn-action { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <div id="location-bar"></div>
+  <div id="input-section"></div>
+  <div id="mood-arc"></div>
+  <div id="bundle-header"></div>
+  <div id="meta-grid"></div>
+  <div id="timeline"></div>
+  <div id="summary"></div>
+  <div id="tools"></div>
+  <div id="actions"></div>
+</main>
+<script>
+/* ==================== 1. PLAN  ==================== */
+const PLAN = {
+  user: {
+    mood_current: "stressed",
+    mood_desired: "happy & relaxed",
+    budget: "₹1200",
+    time: "5 hours",
+    social: "solo",
+    weather: "cloudy 31.7°",
+    place: "Tragad, Ahmedabad, Gujarat",
+    coordinates: "23.1259, 72.5406",
+    gps_accuracy: "69m"
+  },
+  narrative: "This evening starts short of breath and ends softly — a low-effort walk first, then an unhurried café, a warm movie, and a quiet playlist to carry the calm home. It stays near ₹1200, fits about 5 hours, and avoids anything crowded or intense, so the mood can change without being pushed.",
+  api_status: [
+    { label: "Groq", on: true },
+    { label: "Gemini", on: true },
+    { label: "Mem0 cloud", on: false },
+    { label: "Spotify", on: true }
+  ],
+  mood_arc: [
+    { label: "Walk", position: 0.1 },
+    { label: "Café", position: 0.35 },
+    { label: "Place", position: 0.55 },
+    { label: "Movie", position: 0.75 },
+    { label: "Music", position: 0.95 }
+  ],
+  steps: [
+    {
+      type: "activity",
+      number: 1,
+      badge: "walk",
+      title: "20-min walk near Sabarmati Riverfront",
+      duration: "20 min",
+      cost: "₹0",
+      reason: "Open air and gentle movement reset a stressed mind faster than any stimulant — low effort, free, and right nearby.",
+      warning: null
+    },
+    {
+      type: "travel",
+      destination: "Scoop N Munch",
+      duration: "6 min",
+      distance: "1.5 km",
+      cost: "₹0"
+    },
+    {
+      type: "activity",
+      number: 3,
+      badge: "café",
+      title: "Scoop N Munch",
+      duration: "75 min",
+      cost: "₹250",
+      reason: "Quiet, uncrowded, unhurried — a space to decompress over something warm without noise pressing in on you.",
+      warning: null
+    },
+    {
+      type: "travel",
+      destination: "The Gyan Café",
+      duration: "6 min",
+      distance: "3.7 km",
+      cost: "₹0"
+    },
+    {
+      type: "activity",
+      number: 5,
+      badge: "place",
+      title: "The Gyan Café",
+      duration: "29 min",
+      cost: "₹250",
+      reason: "A quieter, wind-down stop that keeps the evening gentle before the film settles you further.",
+      warning: null
+    },
+    {
+      type: "travel",
+      destination: "The Lunchbox",
+      duration: "6 min",
+      distance: "2.4 km",
+      cost: "₹0"
+    },
+    {
+      type: "activity",
+      number: 7,
+      badge: "movie",
+      title: "The Lunchbox",
+      duration: "104 min",
+      cost: "₹220",
+      reason: "Emotionally gentle and character-driven — the kind of film that rewards attention rather than demanding it.",
+      warning: "Genre and tone unverified from listing. Treat runtime as an estimate — confirm the showtime before heading out."
+    },
+    {
+      type: "activity",
+      number: 8,
+      badge: "music",
+      title: "Calming wind-down playlist",
+      duration: "52 min",
+      cost: "₹0",
+      reason: "A sequenced playlist to bring the evening down gently after the film. Starts with something familiar and warm, then gradually quieter and more introspective — matching where your mood should be by now.",
+      warning: null,
+      playlist: [
+        { title: "Arz Kiya Hai", artist: "Anuv Jain", duration: "4:02" },
+        { title: "Iktara", artist: "Amit Trivedi ft. Kavita Seth", duration: "5:14" },
+        { title: "Tum Ho", artist: "Mohit Chauhan", duration: "5:38" },
+        { title: "Tera Ban Jaunga", artist: "Akhil Sachdeva & Tulsi Kumar", duration: "4:47" },
+        { title: "Wo Noor", artist: "AP Dhillon", duration: "3:22" },
+        { title: "Phir Le Aya Dil", artist: "Arijit Singh", duration: "5:01" },
+        { title: "Nazm Nazm", artist: "Arko ft. Ayushmann Khurrana", duration: "4:29" },
+        { title: "Dil Diyan Gallan", artist: "Atif Aslam", duration: "4:55" },
+        { title: "Channa Mereya", artist: "Arijit Singh", duration: "4:49" },
+        { title: "Kabira", artist: "Rekha Bhardwaj & Tochi Raina", duration: "4:21" },
+        { title: "Tu Jaane Na", artist: "Atif Aslam", duration: "5:22" }
+      ]
+    }
+  ],
+  summary: {
+    spend: "₹720",
+    time_total: "306 min",
+    time_asked: "~300 min",
+    budget_asked: "₹1200"
+  },
+  tools: [
+    { category: "Weather", fn: "get_weather", source: "Open-Meteo (live)" },
+    { category: "Cafés / walk", fn: "find_nearby_places", source: "Overpass/OSM (live)" },
+    { category: "Restaurants", fn: "search_restaurants", source: "Overpass/OSM (live)" },
+    { category: "Cinemas", fn: "find_nearby_cinemas", source: "Overpass/OSM (live)" },
+    { category: "Movies", fn: "search_movies", source: "TMDB · runtime marked estimate" },
+    { category: "Music", fn: "search_music", source: "iTunes / Spotify (live)" },
+    { category: "Books", fn: "search_books", source: "Book search" },
+    { category: "Knowledge", fn: "retrieve_knowledge", source: "RAG / web knowledge" },
+    { category: "Your profile", fn: "get_user_profile", source: "Mem0" }
+  ]
+};
+
+/* ==================== 2. RENDER FUNCTIONS ==================== */
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+}[c]));
+
+const PLAY_ICON = `<svg class="pl-play" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 1l7 4-7 4z" fill="var(--amber)"/></svg>`;
+const ARROW_ICON = `<svg class="t-arrow" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h11M8 3l5 5-5 5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+function renderNav() {
+  const nav = document.getElementById("nav");
+  const status = PLAN.api_status || [];
+
+  const chips = status.map((c) =>
+    `<span class="chip${c.on ? " on" : ""}">${esc(c.label)}</span>`
+  ).join("");
+
+  const connect = status.some((c) => /spotify/i.test(c.label))
+    ? `<a class="btn-connect" href="/spotify/login">Connect Spotify</a>`
+    : "";
+
+  const spotifyIndex = status.findIndex((c) => /spotify/i.test(c.label));
+  let right = "";
+  status.forEach((c, i) => {
+    right += `<span class="chip${c.on ? " on" : ""}">${esc(c.label)}</span>`;
+    if (i === spotifyIndex) right += connect;
+  });
+
+  nav.innerHTML = `
+    <div class="nav-brand">
+      <div class="nav-logo">
+        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5"/><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zm0-1.5a8 8 0 1 1 0 16A8 8 0 0 1 8 0z" opacity=".4"/></svg>
+      </div>
+      <div>
+        <div class="nav-title">MoodOS</div>
+        <div class="nav-sub">context-aware experience orchestration</div>
+      </div>
+    </div>
+    <div class="nav-right">${right}</div>`;
+}
+
+function renderLocationBar() {
+  const el = document.getElementById("location-bar");
+  const u = PLAN.user || {};
+  el.innerHTML = `
+    <div class="loc-bar">
+      <span class="loc-dot"></span>
+      <span class="loc-text">Live location ${esc(u.coordinates)} (${esc(u.gps_accuracy)})</span>
+    </div>`;
+}
+
+function renderInputSection() {
+  const el = document.getElementById("input-section");
+  el.innerHTML = `
+    <section>
+      <div class="input-label">Ask MoodOS — a question or an evening to plan</div>
+      <div class="input-card">
+        <textarea placeholder="I had a really stressful day and don't want to stay at home tonight. I'm going alone, have ₹1200, and around 5 hours. I want the evening to gradually take me from stressed to happy and relaxed."></textarea>
+        <hr class="input-divider">
+        <div class="input-row">
+          <input class="city" type="text" placeholder="Your city / area (optional)">
+          <select>
+            <option value="">workflow (optional)</option>
+            <option>solo evening</option>
+            <option>date night</option>
+            <option>group outing</option>
+          </select>
+          <button class="btn-send" type="button">Send</button>
+        </div>
+      </div>
+      <div class="input-hint">Questions like “where am I?” or “what’s the weather?” get a short reply. Mood + budget + time still builds a plan with distances.</div>
+    </section>`;
+}
+
+function renderMoodArc() {
+  const el = document.getElementById("mood-arc");
+  const u = PLAN.user || {};
+  const mp = PLAN.mood_arc || [];
+  if (!mp.length) { el.innerHTML = ""; return; }
+
+  const last = mp[mp.length - 1];
+  const fill = Math.min(100, Math.max(0, last.position * 100));
+
+  const milestones = mp.map((m, i) => {
+    const vert = i % 2 === 1 ? "above" : "below";
+    return `<span class="arc-milestone" style="left:${(m.position * 100).toFixed(1)}%">
+      <span class="arc-label ${vert}">${esc(m.label)}</span>
+      <span class="arc-dot"></span>
+    </span>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="mood-arc">
+      <div class="arc-head">
+        <span class="arc-current">${esc(u.mood_current || "")}</span>
+        <span class="arc-desired">${esc(u.mood_desired || "")}</span>
+      </div>
+      <div class="arc-body">
+        <span class="arc-line"></span>
+        <span class="arc-fill" style="width:${fill}%"></span>
+        ${milestones}
+      </div>
+    </div>`;
+}
+
+function renderBundleHeader() {
+  const el = document.getElementById("bundle-header");
+  el.innerHTML = `
+    <div class="bundle-header">
+      <div class="bundle-eyebrow">Experience plan ready</div>
+      <h2 class="bundle-title">Your evening, curated</h2>
+      <p class="bundle-narrative">${esc(PLAN.narrative)}</p>
+    </div>`;
+}
+
+function renderMetaGrid() {
+  const el = document.getElementById("meta-grid");
+  const u = PLAN.user || {};
+  const weatherPlace = [u.weather, u.place].filter(Boolean).join(", ") || "—";
+  el.innerHTML = `
+    <div class="meta-grid">
+      <div class="meta-cell"><span class="meta-label">Mood</span><span class="meta-value mood">${esc(u.mood_current || "—")}</span></div>
+      <div class="meta-cell"><span class="meta-label">Desired</span><span class="meta-value desired">${esc(u.mood_desired || "—")}</span></div>
+      <div class="meta-cell"><span class="meta-label">Budget</span><span class="meta-value">${esc(u.budget || "—")}</span></div>
+      <div class="meta-cell"><span class="meta-label">Time</span><span class="meta-value">${esc(u.time || "—")}</span></div>
+      <div class="meta-cell"><span class="meta-label">Social</span><span class="meta-value">${esc(u.social || "—")}</span></div>
+      <div class="meta-cell"><span class="meta-label">Weather &amp; place</span><span class="meta-value small">${esc(weatherPlace)}</span></div>
+    </div>`;
+}
+
+function renderPlaylist(step) {
+  const pl = step.playlist;
+  if (!pl) return "";
+  const tracks = pl.tracks || pl.songs || (Array.isArray(pl) ? pl : []);
+  const rows = tracks.map((sg) => {
+    const title = typeof sg === "string" ? sg : (sg.title || sg.name || sg.track || "");
+    const artist = typeof sg === "string" ? "" : (sg.artist || "one of your favourites");
+    const duration = typeof sg === "string" ? "" : (sg.duration || "");
+    return `<li class="pl-track">
+      ${PLAY_ICON}
+      <span class="pl-title">${esc(title)}</span>
+      <span class="pl-dash">—</span><span class="pl-artist">${esc(artist)}</span>
+      ${duration ? `<span class="pl-dur">${esc(duration)}</span>` : ""}
+    </li>`;
+  }).join("");
+
+  const totalSec = tracks.reduce((acc, sg) => {
+    const d = typeof sg === "string" ? "" : (sg.duration || "");
+    const m = String(d).match(/^(\d+):(\d+)$/);
+    return acc + (m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : 0);
+  }, 0);
+  const totalMin = Math.round(totalSec / 60);
+  const plSummary = tracks.length
+    ? `<div class="pl-summary">
+        <span>${tracks.length} songs</span>
+        <span>${totalMin} min total</span>
+      </div>`
+    : "";
+  if (!rows) return "";
+
+  const done = pl.confirmed || pl.created;
+  const btn = done
+    ? `<button class="btn-confirm done" type="button" disabled>Playlist created</button>`
+    : `<button class="btn-confirm" type="button" onclick="togglePlaylist(this)">Confirm and create playlist</button>`;
+
+  return `
+    <hr class="pl-divider">
+    <div class="pl-head">Songs in this playlist</div>
+    <ul class="pl-list">${rows}</ul>
+    ${plSummary}
+    ${btn}`;
+}
+
+function stepHTML(s) {
+  if (s.type === "travel") {
+    return `<div class="t-row">
+      <div class="t-node travel">${ARROW_ICON}</div>
+      <div class="t-card travel-card">
+        <div class="t-card-title">Drive to ${esc(s.to || s.destination || "your next stop")}</div>
+        <div class="t-card-sub">${[s.duration, s.distance, s.cost].filter(Boolean).join(" · ")} · routing</div>
+      </div>
+    </div>`;
+  }
+
+  const playlistTracks = s.playlist
+    ? (s.playlist.tracks || s.playlist.songs || (Array.isArray(s.playlist) ? s.playlist : []))
+    : null;
+  const metaParts = [s.duration, s.cost].filter(Boolean);
+  if (playlistTracks && playlistTracks.length) {
+    metaParts.splice(1, 0, playlistTracks.length + " songs");
+  }
+  const meta = metaParts.join(" · ");
+  const warn = s.warning ? `<div class="t-warn">${esc(s.warning)}</div>` : "";
+  const pl = (typeof renderPlaylist === "function") ? renderPlaylist(s) : "";
+  const badgeCls = String(s.badge || s.type || "place").toLowerCase().replace("café", "cafe");
+
+  return `<div class="t-row">
+    <div class="t-node activity">${esc(s.number)}</div>
+    <div class="t-card">
+      <div class="t-card-top">
+        <div>
+          <div class="t-title">${esc(s.title)}</div>
+          <div class="t-meta">${esc(meta)}</div>
+        </div>
+        <span class="badge ${esc(badgeCls)}">${esc(badgeCls)}</span>
+      </div>
+      <p class="t-reason">${esc(s.why || s.reason || "")}</p>
+      ${warn}
+      ${pl}
+    </div>
+  </div>`;
+}
+
+function renderTimeline() {
+  const el = document.getElementById("timeline");
+  const steps = (PLAN.steps || []).map(stepHTML).join("");
+  el.innerHTML = `<div class="timeline">${steps}</div>`;
+}
+
+function renderSummary() {
+  const el = document.getElementById("summary");
+  const s = PLAN.summary || {};
+
+  const items = [
+    s.spend != null && { label: "Estimated spend", value: String(s.spend) },
+    s.time_total != null && { label: "Total time", value: String(s.time_total) }
+  ].filter(Boolean);
+
+  el.innerHTML = `
+    <div class="summary-bar">
+      ${items.map((it) => `
+        <div>
+          <div class="summary-label">${esc(it.label)}</div>
+          <div class="summary-total">${esc(it.value)}</div>
+        </div>`).join("")}
+      <div class="summary-note">${[s.time_asked, s.budget_asked].filter(Boolean).map(esc).join(" · ")}</div>
+    </div>`;
+}
+
+function renderTools() {
+  const el = document.getElementById("tools");
+  const rows = (PLAN.tools || []).map((t) => `
+    <tr>
+      <td>${esc(t.category)}</td>
+      <td>${esc(t.fn)}</td>
+      <td>${esc(t.source)}</td>
+    </tr>`).join("");
+
+  el.innerHTML = `
+    <details class="tools">
+      <summary>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="6"/><path d="M7 4v3.5l2 1.5"/></svg>
+        <span class="summary-label">Which tools and data sources were used?</span>
+        <span class="chev">▾</span>
+      </summary>
+      <table class="tools-table">${rows}</table>
+    </details>`;
+}
+
+function renderActions() {
+  const el = document.getElementById("actions");
+  el.innerHTML = `
+    <div class="action-row">
+      <button class="btn-action primary" type="button">That was perfect</button>
+      <button class="btn-action ghost" type="button">Prepare movie booking</button>
+      <button class="btn-action ghost" type="button">Create Spotify playlist</button>
+      <button class="btn-action ghost" type="button">Find restaurants</button>
+    </div>`;
+}
+
+function togglePlaylist(btn) {
+  btn.classList.add("done");
+  btn.textContent = "Playlist created";
+  btn.disabled = true;
+}
+
+/* ==================== 3. INIT ==================== */
+function init() {
+  renderNav();
+  renderLocationBar();
+  renderInputSection();
+  renderMoodArc();
+  renderBundleHeader();
+  renderMetaGrid();
+  renderTimeline();
+  renderSummary();
+  renderTools();
+  renderActions();
+}
+
+document.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
+</html>

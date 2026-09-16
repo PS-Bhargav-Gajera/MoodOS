@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+data/*.db
+data/ttl_cache.json
+data/acquired_knowledge.json
+data/mem0_users.json
+data/spotify_tokens.json
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+credentials.json
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
