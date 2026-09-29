@@ -252,12 +252,14 @@ const badgeLabel = (kind) =>
 
 function stepMeta(s) {
   if (s.kind === "travel") return [];
-  const m = [`${s.duration_min || 0} min`];
-  m.push(priceMeta(s) || `₹${s.cost_inr || 0}`);
+  const m = [];
+  m.push(s.duration_min ? s.duration_min + " min" : "time TBD");
+  const price = priceMeta(s) || (s.cost_inr != null ? `₹${s.cost_inr}` : null);
+  if (price) m.push(price);
   const g = genreMeta(s);
-  if (g) m.push(g.replace(/^ · /, ""));
+  if (g) m.push(g.replace(/^ ·\s*/, ""));
   const r = runtimeMeta(s);
-  if (r) m.push(r.replace(/^ · /, ""));
+  if (r) m.push(r.replace(/^ ·\s*/, ""));
   if (s.distance_label) m.push(s.distance_label + (s.walk_min ? ` (~${s.walk_min} min walk)` : ""));
   if (s.kind !== "movie" && s.flexible === false) m.push("fixed");
   return m;
@@ -306,62 +308,84 @@ function genreMeta(s) {
 function priceMeta(s) {
   if (s.kind === "movie" || s.kind === "travel" || s.kind === "music" || s.kind === "streaming") return "";
   if (s.price_is_estimate) {
-    return ` · est. ₹${s.cost_inr || 0}${s.price_tier ? ` (${s.price_tier})` : ""}`;
+    return `est. ₹${s.cost_inr || 0}${s.price_tier ? ` (${s.price_tier})` : ""}`;
   }
   return "";
 }
 
-function renderStep(s) {
+function fmtClock(min) {
+  const h24 = Math.floor(min / 60) % 24;
+  const ap = h24 >= 12 ? "pm" : "am";
+  const h = ((h24 + 11) % 12) + 1;
+  const mm = String(min % 60).padStart(2, "0");
+  return `${h}:${mm} ${ap}`;
+}
+
+function startOfDayMins(round = 15) {
+  const now = new Date();
+  let m = now.getHours() * 60 + now.getMinutes();
+  return Math.ceil(m / round) * round;
+}
+
+function renderStep(s, i, timeLabel) {
+  const clock = timeLabel ? [`≈ ${timeLabel}`] : [];
   if (s.kind === "travel") {
     const dist = s.distance_label || (s.distance_km != null ? s.distance_km + " km" : "");
-    const meta = [
-      `${s.duration_min || 0} min`,
+    const meta = clock.concat([
+      `${s.duration_min ? s.duration_min + " min" : "—"}`,
       `₹${s.cost_inr || 0}`,
       s.flexible === false ? "fixed (routing)" : "",
       dist,
-    ].filter(Boolean).join(" · ");
+    ]).filter(Boolean).join(" · ");
     return `<div class="t-item fade-scroll" data-kind="travel">
       <div class="t-node travel">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M9 5l4 3-4 3"/></svg>
       </div>
       <div class="t-body">
         <div class="t-card travel-card">
-          <div class="t-travel-title">${travelVerb(s.mode)}${s.to ? " to " + s.to : ""}</div>
-          <div class="t-desc travel-desc">${meta}</div>
+          <div class="t-travel-title">${travelVerb(s.mode)}${s.to ? " to " + esc(s.to) : ""}${s.from && s.from !== s.to ? " from " + esc(s.from) : ""}</div>
+          <div class="t-desc travel-desc">${esc(meta)}</div>
         </div>
       </div>
     </div>`;
   }
   const warns = stepWarnings(s);
-  const tracks = Array.isArray(s.tracks) ? s.tracks.slice(0, 5) : [];
+  const tracks = Array.isArray(s.tracks) ? s.tracks : [];
+  const plSec = tracks.reduce((n, t) => n + (t.duration_sec || 0), 0);
+  const plMin = s.playlist_duration_min != null ? s.playlist_duration_min
+    : (plSec ? Math.round(plSec / 60) : null);
+  const plSummary = tracks.length
+    ? `<div class="pl-summary"><span>${tracks.length} tracks</span>${plMin ? `<span>~${plMin} min playlist</span>` : ""}</div>`
+    : "";
   const trackList = tracks.length
     ? `<div class="pl-list pl-inline">${tracks.map((t, i) => `
         <div class="pl-track">
           <span class="pl-idx">${i + 1}</span>
-          <span class="pl-title">${t.title}</span>
+          <span class="pl-title">${esc(t.title)}</span>
           <span class="pl-dur">${fmtDur(t)}</span>
-        </div>`).join("")}</div>
-      <div class="tiny">${s.tracks_source || ""}</div>`
+        </div>`).join("")}${plSummary}</div>
+      <div class="tiny">${esc(s.tracks_source || "")}</div>`
     : "";
-  return `<div class="t-item fade-scroll" data-kind="${s.kind || ""}">
-    <div class="t-node activity">${s.order ?? ""}</div>
+  const meta = clock.concat(stepMeta(s)).join(" · ");
+  return `<div class="t-item fade-scroll" data-kind="${esc(s.kind || "")}">
+    <div class="t-node activity">${s.order ?? (i + 1)}</div>
     <div class="t-body">
       <div class="t-card">
         <div class="t-card-head">
           <div>
-            <div class="t-title">${s.title}</div>
-            <div class="t-meta-row">${stepMeta(s).map((m) => `<span>${m}</span>`).join("")}</div>
+            <div class="t-title">${esc(s.title)}</div>
+            <div class="t-meta-row">${meta.split(" · ").map((m) => `<span>${m}</span>`).join("")}</div>
           </div>
-          <div class="t-type-badge ${s.kind || ""}">${badgeLabel(s.kind)}</div>
+          <div class="t-type-badge ${esc(s.kind || "")}">${badgeLabel(s.kind)}</div>
         </div>
-        <div class="t-desc">${s.why || ""}</div>
+        <div class="t-desc">${esc(s.why || "")}</div>
         ${s.kind === "movie" && ((Array.isArray(s.streaming) && s.streaming.length) || s.watch_link)
           ? `<div class="t-home-note">${Array.isArray(s.streaming) && s.streaming.length
-              ? `🏠 Also streaming at home on ${s.streaming.join(", ")}${s.watch_link ? ` · <a href="${s.watch_link}" target="_blank" class="tiny">watch link →</a>` : ""}`
-              : `🏠 Also watchable at home · <a href="${s.watch_link}" target="_blank" class="tiny">find where to watch →</a>`}</div>`
+              ? `🏠 Also streaming at home on ${esc(s.streaming.join(", "))}${s.watch_link ? ` · <a href="${esc(s.watch_link)}" target="_blank" class="tiny">watch link →</a>` : ""}`
+              : `🏠 Also watchable at home · <a href="${esc(s.watch_link)}" target="_blank" class="tiny">find where to watch →</a>`}</div>`
           : ""}
         ${trackList}
-        ${warns.map((w) => `<div class="t-warning">${w}</div>`).join("")}
+        ${warns.map((w) => `<div class="t-warning">${esc(w)}</div>`).join("")}
         ${showtimeDisclaimer(s)}
       </div>
     </div>
@@ -382,7 +406,24 @@ function renderPlan(data) {
   const plan = data.plan || {};
   const slots = data.slots || {};
   const stayHome = data.stay_home || false;
-  const steps = (plan.steps || []).map(renderStep).join("");
+  const stepsRaw = plan.steps || [];
+  let cursor = startOfDayMins();
+  const schedule = stepsRaw.map((s) => {
+    const sAt = cursor;
+    cursor += (parseInt(s.duration_min, 10) || 0);
+    return { startAt: sAt, endAt: cursor };
+  });
+  const steps = stepsRaw.map((s, i) => renderStep(s, i, fmtClock(schedule[i].startAt))).join("");
+  const over = !!(plan.budget && plan.budget.over_budget);
+  const budgetNote = over
+    ? `<div class="budget-alert fade-scroll">⚠ Estimated spend ₹${plan.budget.total_cost_inr} exceeds your ₹${plan.budget.budget_inr} budget by ₹${plan.budget.excess_inr}. ` +
+      (Array.isArray(plan.budget_notes) && plan.budget_notes.length
+        ? "" : "Consider trimming the costliest stop.")
+    + `</div>`
+    : "";
+  const startTxt = schedule.length ? fmtClock(schedule[0].startAt) : null;
+  const endTxt = schedule.length && schedule[schedule.length - 1].endAt > schedule[0].startAt
+    ? fmtClock(schedule[schedule.length - 1].endAt) : startTxt;
   const weather = (data.weather?.condition || "—") +
     (data.weather?.temperature_c != null ? " " + data.weather.temperature_c + "°" : "");
   const place = stayHome
@@ -397,17 +438,17 @@ function renderPlan(data) {
     <div class="bundle-header fade-scroll">
       <div class="bundle-eyebrow">Experience plan ready</div>
       <div class="bundle-title">${stayHome ? "A Cozy Night In, Curated" : "Your Evening, Curated"}</div>
-      <div class="bundle-desc">${plan.explanation || ""}</div>
+      <div class="bundle-desc">${esc(plan.explanation || "")}</div>
     </div>
 
     <div class="meta-grid fade-scroll">
       <div class="meta-cell">
         <div class="meta-label">Mood</div>
-        <div class="meta-value mood">${metaVal(slots.current_mood)}</div>
+        <div class="meta-value mood">${esc(metaVal(slots.current_mood))}</div>
       </div>
       <div class="meta-cell">
         <div class="meta-label">Desired</div>
-        <div class="meta-value desired">${metaVal(slots.desired_mood)}</div>
+        <div class="meta-value desired">${esc(metaVal(slots.desired_mood))}</div>
       </div>
       <div class="meta-cell">
         <div class="meta-label">Budget</div>
@@ -419,11 +460,11 @@ function renderPlan(data) {
       </div>
       <div class="meta-cell">
         <div class="meta-label">Social</div>
-        <div class="meta-value">${metaVal(slots.social)}</div>
+        <div class="meta-value">${esc(metaVal(slots.social))}</div>
       </div>
       <div class="meta-cell">
         <div class="meta-label">Weather · Place</div>
-        <div class="meta-value place">${metaVal(weather)} · ${metaVal(place)}</div>
+        <div class="meta-value place">${esc(metaVal(weather))} · ${esc(metaVal(place))}</div>
       </div>
     </div>
 
@@ -434,17 +475,18 @@ function renderPlan(data) {
     <div class="total-bar fade-scroll">
       <div>
         <div class="total-label">Estimated spend</div>
-        <div class="total-amount">₹${plan.total_cost_inr ?? "—"}</div>
+        <div class="total-amount ${over ? "over" : ""}">₹${plan.total_cost_inr ?? "—"}</div>
       </div>
       <div class="total-time">
         <div class="total-label">Total time</div>
-        <div class="total-amount">${plan.total_duration_min ?? "—"} min</div>
+        <div class="total-amount">${plan.total_duration_min ?? "—"} min${startTxt ? `<span class="t-clock">${startTxt} → ${endTxt}</span>` : ""}</div>
       </div>
       <div>
         <div class="total-label">You asked for</div>
         <div style="font-size:13px; color: var(--text-m);">~${plan.requested_minutes ?? "—"} min${slots.budget_inr != null ? " · ₹" + slots.budget_inr + " budget" : ""}</div>
       </div>
     </div>
+    ${budgetNote}
 
     ${renderToolUsage(data)}
     ${stayHome ? renderStreamingMovies(data.streaming_movies) : renderRestaurants(data.restaurants)}
@@ -540,7 +582,7 @@ function renderPlan(data) {
         $("book").innerHTML = `
           <p><strong>Prepared playlist</strong> · based on your ${data.slots?.desired_mood || data.slots?.current_mood || "mood"}
             ${prep.seed > 0 ? `<span class="tiny">(refreshed #${seed + 1})</span>` : ""}</p>
-          ${prep.provider ? `<p class="tiny">via ${prep.provider}${prep.provider === "itunes-search" ? " — Spotify search unavailable (needs Premium on the app-owner account)" : ""}</p>` : ""}
+          ${prep.provider ? `<p class="tiny">via ${prep.provider}${prep.provider === "none" ? " — no Spotify match for this mood yet" : ""}</p>` : ""}
           <div class="pl-list">
             ${rows || `<p class="tiny">No tracks — try refreshing or adjusting your mood.</p>`}
           </div>
@@ -592,6 +634,8 @@ function render(data) {
 
 $("go").onclick = async () => {
   $("status").classList.remove("hidden");
+  $("status").classList.add("busy");
+  $("go").disabled = true;
   $("result").classList.add("hidden");
   const userLabel = ($("loc").value || "").trim();
   if (!geo.lat && userLabel) {
@@ -627,18 +671,27 @@ $("go").onclick = async () => {
     $("status").textContent = data.mode === "chat" ? "Direct answer" : "Experience plan ready.";
     render(data);
   } catch (err) {
+    const timedOut = err.name === "AbortError";
     console.error(err);
-    $("status").textContent = "Something went wrong — the request timed out or the backend is unreachable.";
+    $("status").textContent = timedOut
+      ? "MoodOS took too long — timed out after 90s. Try again."
+      : "Something went wrong — the backend may be unreachable.";
     $("result").classList.remove("hidden");
     $("result").innerHTML = `
       <div class="result-card">
         <div class="bundle-eyebrow">Could not build a plan</div>
         <div class="bundle-title">Oops</div>
-        <div class="bundle-desc">Couldn't get an answer. Try again, or check that the server is running.</div>
+        <div class="bundle-desc">${timedOut
+          ? "The request timed out (over 90s). Your network or a live API may be slow."
+          : "Couldn't get an answer. Check that the server is running and try again."}</div>
+        <button class="btn-action btn-primary-action" type="button" id="retry">Try again</button>
       </div>
     `;
+    $("retry").onclick = () => $("go").click();
   } finally {
     clearTimeout(timer);
+    $("go").disabled = false;
+    $("status").classList.remove("busy");
   }
 };
 
@@ -786,6 +839,13 @@ if ($("memories-btn")) {
   });
 }
 
+document.getElementById('clear-all-memories')
+  ?.addEventListener('click', async () => {
+    if (!confirm('Delete ALL memories? This cannot be undone.')) return;
+    await fetch('/api/memory/all?user_id=demo', { method: 'DELETE' });
+    loadMemories(); // existing function that refreshes the list
+  });
+
 if ($("journal-btn")) {
   $("journal-btn").onclick = openJournal;
   $("journal-close").onclick = () => $("journal-modal").classList.add("hidden");
@@ -828,7 +888,7 @@ async function loadJournal() {
     ]);
     if (!trendsRes.ok) throw new Error("http " + trendsRes.status);
     t = await trendsRes.json();
-    s = stripRes.ok ? await stripRes.json() : { entries: [] };
+    s = stripRes.ok ? await stripRes.json() : { entries: [], rated_count: 0 };
   } catch {
     body.innerHTML = '<div class="modal-empty">Couldn&#39;t load your journal.</div>';
     return;
@@ -908,7 +968,7 @@ function reactionRow(entry) {
   const dateTxt = entry.local_date ? fmtDateShort(entry.local_date) : "";
   const btns = REACTIONS.map((r) => {
     const chosen = rated && entry.mood_reaction === r.key;
-    const cls = ["jr-btn", chosen ? "on" : (rated ? "off" : "")].filter(Boolean).join(" ");
+    const cls = ["jr-btn", chosen ? `on on-${entry.mood_reaction}` : (rated ? "off" : "")].filter(Boolean).join(" ");
     const attrs = rated
       ? 'tabindex="-1" disabled aria-disabled="true"'
       : `data-react="${r.key}" aria-pressed="false"`;
@@ -949,7 +1009,7 @@ async function reactToEntry(entryId, reaction) {
           it.reactable = false;
         }
       }
-      currentStrip.rated_count += 1;
+      currentStrip.rated_count = (currentStrip.rated_count || 0) + 1;
       const card = $("jr-card");
       if (card) card.innerHTML = renderPlanReactions(currentStrip);
       return;
@@ -1067,18 +1127,23 @@ function renderLineChart(hm) {
   // Contiguous present days connect with a solid line; spans with one or more
   // missing days connect with a dashed segment so sparse weeks read as gaps,
   // not a broken chart. The area fill only paints contiguous runs.
-  let area = "", runStart = null, lastPt = null;
+  let area = "", runStart = null, lastPt = null, runCount = 0;
+  const closeRun = () => {
+    if (lastPt && runStart && runCount > 1) {
+      area += ` L ${rnd(lastPt.x)} ${rnd(y0)} L ${rnd(runStart.x)} ${rnd(y0)} Z`;
+    }
+    lastPt = null; runStart = null; runCount = 0;
+  };
   for (const p of pts) {
     if (p) {
-      if (!lastPt) { area += `M ${rnd(p.x)} ${rnd(p.y)}`; runStart = p; }
-      else { area += ` L ${rnd(p.x)} ${rnd(p.y)}`; }
+      if (!lastPt) { area += `M ${rnd(p.x)} ${rnd(p.y)}`; runStart = p; runCount = 1; }
+      else { area += ` L ${rnd(p.x)} ${rnd(p.y)}`; runCount += 1; }
       lastPt = p;
     } else if (lastPt) {
-      area += ` L ${rnd(lastPt.x)} ${rnd(y0)} L ${rnd(runStart.x)} ${rnd(y0)} Z`;
-      lastPt = null; runStart = null;
+      closeRun();
     }
   }
-  if (lastPt) area += ` L ${rnd(lastPt.x)} ${rnd(y0)} L ${rnd(runStart.x)} ${rnd(y0)} Z`;
+  if (lastPt) closeRun();
 
   const present = [];
   for (let i = 0; i < pts.length; i++) if (pts[i]) present.push({ ...pts[i], i });
@@ -1111,7 +1176,7 @@ function renderLineChart(hm) {
   const dots = pts.filter(Boolean).map((p) => {
     const count = p.d.count || 1;
     const r = Math.min(6, 2.5 + Math.log2(count));
-    return `<circle class="l-dot" cx="${rnd(p.x)}" cy="${rnd(p.y)}" r="${rnd(r)}"><title>${p.d.date} · ${count} plan${count === 1 ? "" : "s"} · avg ${p.d.avg_valence}</title></circle>`;
+    return `<circle class="l-dot" cx="${rnd(p.x)}" cy="${rnd(p.y)}" r="${rnd(r)}"><title>${p.d.date} · ${count} plan${count === 1 ? "" : "s"} · avg ${rnd2(p.d.avg_valence)}</title></circle>`;
   }).join("");
 
   const labelled = pts.some(Boolean);
@@ -1147,12 +1212,12 @@ function renderWeather(wx) {
     return `<div class="wx-row">
       <span class="wx-label">${label}</span>
       <div class="wx-track"><div class="wx-fill ${neg ? "neg" : "pos"}" style="left:${rnd2(neg ? 50 - w : 50)}%;width:${rnd2(w)}%"></div></div>
-      <span class="wx-val">${v >= 0 ? "+" : ""}${v}</span>
+      <span class="wx-val">${v >= 0 ? "+" : ""}${fmtV(v)}</span>
       <span class="wx-n">${n}</span>
     </div>`;
   };
   const bands = ((wx && wx.by_temperature) || []).map((b) =>
-    `<div class="wx-temp-row"><span>${esc(b.band)}</span><span><b>${b.avg_valence ?? "—"}</b> · ${b.count}</span></div>`
+    `<div class="wx-temp-row"><span>${esc(b.band)}</span><span><b>${fmtV(b.avg_valence)}</b> · ${b.count}</span></div>`
   ).join("");
   const r = wx && wx.temp_valence_r;
   return `
@@ -1162,12 +1227,18 @@ function renderWeather(wx) {
       <div class="wx-legend"><span>−1</span><span>0</span><span>+1</span></div>
       <div class="wx-temp">
         ${bands}
-        ${r != null ? `<div class="wx-temp-row"><span>Mood ↔ temp (r)</span><span><b>${r}</b></span></div>` : ""}
+        ${r != null ? `<div class="wx-temp-row"><span>Mood ↔ temp (r)</span><span><b>${fmtV(r)}</b></span></div>` : ""}
       </div>
     </div>`;
 }
 
 function rnd2(n) { return Math.round(n * 10) / 10; }
+
+function fmtV(n) {
+  if (n == null) return "—";
+  const r = Math.round(n * 100) / 100;
+  return String(r);
+}
 
 // --- calendar heatmap ---------------------------------------------------------
 
@@ -1186,7 +1257,7 @@ function renderHeatmap(hm) {
   const cellFor = (dateStr, d) => {
     if (!d) return `<div class="hm-cell"></div>`;
     const fill = valenceFill(d.avg_valence);
-    return `<div class="hm-cell" style="background:${fill}" title="${dateStr} · ${d.count} ${d.count === 1 ? "plan" : "plans"} · avg ${d.avg_valence}"></div>`;
+    return `<div class="hm-cell" style="background:${fill}" title="${dateStr} · ${d.count} ${d.count === 1 ? "plan" : "plans"} · avg ${rnd2(d.avg_valence)}"></div>`;
   };
 
   const rowLabels = { 0: "Mon", 2: "Wed", 4: "Fri", 6: "Sun" };
@@ -1200,7 +1271,7 @@ function renderHeatmap(hm) {
     }
   }
 
-  const colsDef = `34px repeat(${cols}, 13px)`;
+  const colsDef = `34px repeat(${cols}, minmax(8px, 14px))`;
   const legendCells = [-1, -0.5, 0, 0.5, 1].map((v) =>
     `<div class="hm-cell" style="background:${valenceFill(v)}"></div>`
   ).join("");
@@ -1208,7 +1279,7 @@ function renderHeatmap(hm) {
   return `
     <div class="hm-scroll">
       <div class="hm-grid" style="grid-template-columns:${colsDef}">
-        ${buildMonthLabels(firstMonday, cols)}
+        ${buildMonthLabels(firstMonday, cols, colsDef)}
         ${cells}
       </div>
       <div class="hm-legend">
@@ -1219,7 +1290,7 @@ function renderHeatmap(hm) {
     </div>`;
 }
 
-function buildMonthLabels(firstMonday, cols) {
+function buildMonthLabels(firstMonday, cols, colsDef) {
   const parts = ['<div></div>'];  // spacer aligned with the weekday-label column
   let c = 0;
   while (c < cols) {
@@ -1235,5 +1306,5 @@ function buildMonthLabels(firstMonday, cols) {
     parts.push(`<div class="hm-month-label" style="grid-column: span ${n}">${month}</div>`);
     c += n;
   }
-  return `<div class="hm-months" style="grid-template-columns:34px repeat(${cols}, 13px)">${parts.join("")}</div>`;
+  return `<div class="hm-months" style="grid-template-columns:${colsDef}">${parts.join("")}</div>`;
 }

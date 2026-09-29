@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -76,6 +77,16 @@ def init_db() -> None:
                 stay_home         INTEGER NOT NULL DEFAULT 0,
                 source            TEXT NOT NULL DEFAULT 'plan'
             );
+            CREATE TABLE IF NOT EXISTS shown_items (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                title_key  TEXT NOT NULL,
+                title      TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_shown_user_kind
+                ON shown_items (user_id, kind, id);
             CREATE INDEX IF NOT EXISTS idx_mood_user_time
                 ON mood_entries (user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_mood_user_date
@@ -128,6 +139,55 @@ def save_feedback(user_id: str, event_id: int | None, signal: str, note: str, lo
         )
         conn.commit()
         conn.close()
+
+
+def _title_key(title: str) -> str:
+    """Normalise a title for repeat detection (case/punctuation/space insensitive)."""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+    return cleaned
+
+
+def record_shown(user_id: str, kind: str, title: str) -> None:
+    """Remember that we showed this movie/track/place to this user.
+
+    This is a durable "what did we already put in front of them" log, kept
+    deliberately separate from Mem0: it is not a preference signal, it is
+    bookkeeping, and it must never be searched as semantic memory.
+    """
+    key = _title_key(title)
+    if not key:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO shown_items (user_id, kind, title_key, title, created_at) VALUES (?,?,?,?,?)",
+            (user_id, kind, key, title, now),
+        )
+        # Keep the log bounded so a heavy user cannot grow it without limit.
+        conn.execute(
+            """
+            DELETE FROM shown_items
+            WHERE id NOT IN (
+                SELECT id FROM shown_items WHERE user_id = ? ORDER BY id DESC LIMIT 200
+            )
+            """,
+            (user_id,),
+        )
+        conn.commit()
+        conn.close()
+
+
+def recent_shown(user_id: str, kind: str, limit: int = 25) -> list[str]:
+    """Titles of a kind we recently showed, newest first."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT title FROM shown_items WHERE user_id = ? AND kind = ? ORDER BY id DESC LIMIT ?",
+            (user_id, kind, limit),
+        ).fetchall()
+        conn.close()
+    return [r[0] for r in rows if r and r[0]]
 
 
 def get_event(event_id: int) -> dict | None:

@@ -87,7 +87,7 @@ def test_plan_endpoint_forwards_resolved_location(monkeypatch):
                         prompt=prompt, names=location_names)
         return {"mode": "plan", "ok": True}
 
-    def fake_resolve(lat, lon, user_label, ip):
+    def fake_resolve(lat, lon, user_label, ip, accuracy_m=None):
         return {
             "lat": 21.5, "lon": 70.46, "source": "user", "label": "Junagadh",
             "city": "Junagadh", "area": "", "state": "Gujarat", "country": "India",
@@ -123,7 +123,7 @@ def test_chat_location_reply_uses_manual_city(monkeypatch):
                 "reply": f"Junagadh", "location": {"city": "Junagadh"},
                 "weather": {}, "used_default_location": False, "plan": None}
 
-    def fake_resolve(lat, lon, user_label, ip):
+    def fake_resolve(lat, lon, user_label, ip, accuracy_m=None):
         return {
             "lat": 21.5, "lon": 70.46, "source": "user", "label": "Junagadh",
             "city": "Junagadh", "area": "", "state": "Gujarat", "country": "India",

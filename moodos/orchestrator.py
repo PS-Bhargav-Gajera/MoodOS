@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime
 from typing import Any
 
 from moodos import actions, providers
@@ -10,6 +11,7 @@ from moodos import journal
 from moodos.config import settings
 from moodos.db import ensure_user, save_event
 from moodos.llm import router
+from moodos.location_service import location_service
 from moodos.mcp_server import mcp
 from moodos.memory import mem0
 import moodos.nlu as nlu
@@ -19,11 +21,118 @@ from moodos.ranking import hard_filter, rerank, score_item
 
 log = logging.getLogger("moodos.orchestrator")
 
-AHMEDABAD_CINEMA = {"lat": 23.0116, "lon": 72.5294}
-
 # Lightweight "seen recently" guard so we don't re-suggest the exact same
 # movie / playlist on every single request without relying on fixed templates.
 _seen_recent: dict[str, list[str]] = {}
+
+# --- music query rotation -------------------------------------------------
+# A single fixed query per mood means the same Spotify results every time. We
+# instead pick from a pool of stylistic seeds, biased by time of day, weather and
+# whether the user wants energy or calm, and prefer whichever seed we have used
+# least recently (tracked in the shown_items log).
+_CALM_SEEDS = ("lofi", "acoustic", "ambient", "instrumental", "indie mellow", "soft piano")
+_ENERGY_SEEDS = ("upbeat", "dance pop", "funk", "rock", "party hits", "electronic")
+_DAYPART_SEEDS = {
+    "morning": ("acoustic", "indie mellow", "folk", "soft piano", "upbeat"),
+    "afternoon": ("indie mellow", "funk", "acoustic", "lofi", "jazz"),
+    "evening": ("lofi", "ambient", "soft piano", "jazz", "instrumental"),
+    "night": ("ambient", "electronic", "instrumental", "late night", "deep house"),
+}
+
+
+def _time_bucket(now: datetime | None = None) -> str:
+    h = (now or datetime.now()).hour
+    if 5 <= h < 12:
+        return "morning"
+    if 12 <= h < 17:
+        return "afternoon"
+    if 17 <= h < 22:
+        return "evening"
+    return "night"
+
+
+def _music_seed_candidates(slots: dict, weather: dict | None) -> list[str]:
+    """Ordered stylistic seeds for this mood/time/weather, most fitting first."""
+    weather = weather or {}
+    text = str(slots.get("music_language") or "")
+    intensity = str(slots.get("intensity") or "low").lower()
+    current = str(slots.get("current_mood") or "").lower()
+    wants_energy = intensity == "high" or any(
+        w in current for w in ("happy", "excited", "energiz", "bored", "restless")
+    )
+    pool = _ENERGY_SEEDS if wants_energy else _CALM_SEEDS
+
+    ordered: list[str] = []
+    for seed in _DAYPART_SEEDS.get(_time_bucket(), _CALM_SEEDS):
+        if seed not in ordered:
+            ordered.append(seed)
+    for seed in pool:
+        if seed not in ordered:
+            ordered.append(seed)
+
+    cond = str(weather.get("condition") or weather.get("weather_condition") or "").lower()
+    if any(w in cond for w in ("rain", "storm", "drizzle", "snow")):
+        for seed in ("lofi", "ambient", "piano"):
+            if seed in ordered:
+                ordered.remove(seed)
+            ordered.insert(0, seed)
+    return ordered
+
+
+def _rotate_music_query(base: str, slots: dict, weather: dict | None,
+                        user_id: str = "demo") -> str:
+    """Attach the least-recently-used stylistic seed to the base query.
+
+    The seed is recorded so the next request prefers a different one, which is
+    what stops Spotify returning an identical playlist every evening.
+    """
+    from moodos import db as _db
+
+    candidates = _music_seed_candidates(slots, weather)
+    if not candidates:
+        return base
+    try:
+        used = [t.lower() for t in _db.recent_shown(user_id, "music_seed", limit=len(candidates) * 2)]
+    except Exception:
+        used = []
+    chosen = next((c for c in candidates if c not in used), candidates[0])
+    try:
+        _db.record_shown(user_id, "music_seed", chosen)
+    except Exception:
+        pass
+    return f"{base} {chosen}".strip()
+
+
+def _exclude_recent_tracks(tracks: list[dict] | None, user_id: str) -> list[dict]:
+    """Drop tracks we already put in front of this user.
+
+    Only removes genuinely repeated tracks; if the filter would empty the pool
+    we keep the original results rather than showing an empty music step.
+    """
+    from moodos import db as _db
+
+    try:
+        recent = {t.lower() for t in _db.recent_shown(user_id, "track", limit=40)}
+    except Exception:
+        return list(tracks or [])
+    if not recent:
+        return list(tracks or [])
+    kept = [t for t in (tracks or []) if (t.get("title") or "").lower() not in recent]
+    return kept or list(tracks or [])
+
+
+def _excluded_movie_titles(user_id: str) -> set[str]:
+    """Normalised titles of movies already suggested, used to filter the pool."""
+    from moodos import db as _db
+
+    try:
+        return {_norm_title(t) for t in _db.recent_shown(user_id, "movie", limit=25) if t}
+    except Exception:
+        return set()
+
+
+def _norm_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
 
 
 def _derive_search_query(message: str, slots: dict, kind: str,
@@ -135,35 +244,41 @@ def _preference_signals(memories: list[dict]) -> dict:
 
 # ---------------------------------------------------------------------------
 
-def _movie_candidates(cinemas: list[dict], lat: float, lon: float) -> list[dict]:
-    """Turn real map-found cinemas into movie candidates.
+def _movie_candidates(cinemas: list[dict], lat: float, lon: float,
+                      region: str = "IN", films: list[dict] | None = None) -> list[dict]:
+    """Turn real map-found cinemas into movie candidates using live TMDB titles.
 
-    Each real nearby cinema is paired with a show (title/time/price). The movie
-    RUNTIME is looked up from TMDB (real) when a key is available; otherwise it
-    is explicitly marked as an estimate. Real per-cinema showtimes are NOT
-    available for India through a free API, so the shown time is always surfaced
-    as an estimate ("check the cinema for exact timing") rather than a fact.
+    Runtime/genres come from TMDB when a key is available. Real per-cinema
+    showtimes are not available for India through a free API, so the shown time
+    is always an estimate ("check the cinema for exact timing").
     """
-    shows = actions.list_showtimes()  # mock now-playing pool (titles/times/prices)
     if not cinemas:
         return []
+    region = (region or "IN").upper()
+    films = films if films is not None else providers.tmdb_now_playing(region=region, limit=max(8, len(cinemas)))
+    if not films:
+        films = providers.tmdb_trending("movie", "week", limit=8)
+    if not films:
+        return []
+    shows = actions.list_showtimes(lat=lat, lon=lon, limit=len(films), region=region, movies=films)
     out: list[dict] = []
     for i, venue in enumerate(cinemas):
-        show = shows[i % len(shows)]
-        venue_name = venue.get("name") or show["cinema"]
-        meta = providers.movie_metadata_by_title(show["movie"])
-        duration_min = meta.get("runtime_min")
-        is_estimate = meta.get("source") != "tmdb" or not duration_min
-        genres = meta.get("genres") or []
-        genre_known = meta.get("genre_source") == "tmdb" and bool(genres)
+        show = shows[i % len(shows)] if shows else None
+        if not show:
+            continue
+        venue_name = venue.get("name") or venue.get("title") or "Nearby cinema"
+        tmdb_id = show.get("tmdb_id")
+        detail = providers.tmdb_movie_details(tmdb_id) if tmdb_id else {}
+        duration_min = detail.get("runtime_min")
+        is_estimate = not duration_min
+        genres = detail.get("genres") or []
+        genre_known = bool(genres)
+        overview = detail.get("overview") or show.get("overview") or ""
+        tagline = detail.get("tagline") or ""
         fit, fit_reason = (
-            providers.classify_movie_fit(genres, meta.get("overview"), meta.get("tagline"))
-            if genre_known else ("unknown", "genre metadata unavailable (no TMDB key / title not found)")
+            providers.classify_movie_fit(genres, overview, tagline)
+            if genre_known else ("unknown", "genre metadata unavailable")
         )
-        # Same title can often also be watched at home — attach the TMDB id so
-        # the streaming option can be resolved for the movie actually chosen
-        # into the plan (kept lazy: not every candidate needs a watch lookup).
-        _tmdb_id = meta.get("tmdb_id")
         out.append(
             {
                 "id": f"movie:{venue.get('id', i)}",
@@ -174,24 +289,25 @@ def _movie_candidates(cinemas: list[dict], lat: float, lon: float) -> list[dict]
                 "estimated_cost": show["price_inr"],
                 "duration_min": duration_min if duration_min else 130,
                 "runtime_min_real": duration_min,
-                "runtime_source": meta.get("source", "estimate"),
+                "runtime_source": "tmdb" if duration_min else "estimate",
                 "is_estimate": bool(is_estimate),
                 "intensity": "low",
-                "source": "overpass-cinema+" + show["provider"],
-                "show": {**show, "showtime_estimated": True, "venue": venue_name},
+                "source": "overpass-cinema+" + (show.get("provider") or "tmdb"),
+                "show": {**show, "showtime_estimated": True, "venue": venue_name, "cinema": venue_name},
                 "showtime_estimated": True,
                 "showtime_disclaimer": (
                     f"Showtime is an estimate — check {venue_name} for exact timing."
                 ),
-                "criteria": {"title": show["movie"], "description": (meta.get("overview") or "")[:120]},
+                "criteria": {"title": show["movie"], "description": overview[:120]},
                 "genres": genres,
-                "genre_source": meta.get("genre_source", "unknown"),
+                "genre_source": "tmdb" if genre_known else "unknown",
                 "genre_fit": fit,
                 "genre_fit_reason": fit_reason,
                 "mood_fit_verified": bool(genre_known),
                 "runtime_note": f"Runtime from TMDB ({duration_min} min)" if not is_estimate else "Runtime/showtime is an estimate",
-                "tmdb_id": _tmdb_id,
-                "review_quality": 8.0,
+                "tmdb_id": tmdb_id,
+                "poster_url": show.get("poster_url") or detail.get("poster_url"),
+                "review_quality": float(detail.get("vote_average") or 7.0),
                 "moods": ["calm", "warm"],
                 "lat": float(venue.get("lat") or lat),
                 "lon": float(venue.get("lon") or lon),
@@ -249,6 +365,31 @@ def _remember_suggestions(plan: dict) -> None:
         _seen_recent[key] = _seen_recent[key][-12:]
 
 
+def _record_shown_items(plan: dict, user_id: str) -> None:
+    """Persist what we actually put in front of the user.
+
+    Durable (SQLite) rather than the in-process _seen_recent dict, so repeats
+    are still suppressed after a server restart. Kept out of Mem0 on purpose:
+    "we already showed this" is bookkeeping, not a preference, and writing it
+    as an assistant message would pollute the semantic memory.
+    """
+    from moodos import db as _db
+
+    try:
+        for step in plan.get("steps") or []:
+            kind = str(step.get("kind") or "").lower()
+            title = (step.get("title") or "").strip()
+            if kind in {"movie", "streaming"} and title:
+                _db.record_shown(user_id, "movie", title)
+            elif kind == "music":
+                for t in step.get("tracks") or []:
+                    name = (t.get("title") or "").strip()
+                    if name:
+                        _db.record_shown(user_id, "track", name)
+    except Exception as exc:  # never let bookkeeping break a plan
+        log.warning("could not record shown items: %s", exc)
+
+
 def _attach_geo(step: dict, ranked: list[dict]) -> dict:
     title = (step.get("title") or "").lower()
     for item in ranked:
@@ -256,11 +397,20 @@ def _attach_geo(step: dict, ranked: list[dict]) -> dict:
         if it and (it in title or title in it):
             step["distance_km"] = item.get("distance_km")
             step["distance_label"] = _fmt_km(item.get("distance_km"))
-            step["walk_min"] = _walk_min(item.get("distance_km"))
+            step["walk_min"] = item.get("walk_min") or _walk_min(item.get("distance_km"))
+            step["drive_min"] = item.get("drive_min")
+            step["routing_source"] = item.get("routing_source")
+            step["category"] = item.get("category")
+            step["address"] = item.get("address")
+            step["phone"] = item.get("phone")
+            step["website"] = item.get("website")
+            if step.get("_lat") is None and item.get("lat") is not None:
+                step["_lat"] = item.get("lat")
+                step["_lon"] = item.get("lon")
             return step
     if step.get("distance_km") is not None:
         step["distance_label"] = _fmt_km(step.get("distance_km"))
-        step["walk_min"] = _walk_min(step.get("distance_km"))
+        step["walk_min"] = step.get("walk_min") or _walk_min(step.get("distance_km"))
     return step
 
 PLAN_PROMPT = """You are MoodOS Experience Planner (Gemini-first).
@@ -274,17 +424,24 @@ Return JSON:
   "uncertainty": []
 }}
 Rules:
-- Stay within budget_inr and a total duration that matches duration_hours: all steps
-  (travel included) should sum to about duration_hours * 60 minutes.
-- Follow mood trajectory.
-- Use ONLY candidates and live facts given. Do not invent showtimes or prices.
+- Stay within budget_inr and duration_hours * 60 minutes total.
+- NEVER invent a generic walk or a place that is not in ranked candidates.
+  A walk step is allowed only when a real park/garden title is in the list.
+- NEVER create travel steps. Travel legs are added automatically.
+- Use ONLY place titles from the ranked candidates list verbatim.
+  Never invent place names.
+- You MUST spend at least 60% of budget_inr across the steps.
+  With ₹1200 budget, total cost_inr across steps must be >= ₹720.
+  Include a movie step (cost ~₹220) if duration_hours >= 3
+  and stay_home is false.
 - Prefer quiet/low intensity if intensity is low.
-- If stay_home is true, use kind 'streaming' instead of 'movie' and do not suggest going to a cinema.
+- If stay_home is true, use kind=streaming not movie.
+- Maximum 5 steps total. No filler steps.
 User slots: {slots}
 Mem0: {memory}
 Weather: {weather}
 Ranked candidates: {candidates}
-Live showtimes (mock provider): {shows}
+Live cinema pairings (TMDB now-playing + OSM venues; showtimes estimated): {shows}
 """
 
 
@@ -325,7 +482,7 @@ def _plan_with_budget(prompt: str, ranked: list, slots: dict, weather: dict) -> 
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    thread.join(timeout=18.0)
+    thread.join(timeout=35.0)
     if result.get("steps"):
         return result
     log.warning("LLM plan exceeded budget; using heuristic plan")
@@ -483,10 +640,13 @@ def _pick_dining(ranked: list[dict], slots: dict) -> tuple[dict | None, dict | N
     win just because it ranks first. Otherwise keep the original first-match
     behaviour."""
     restaurants = [c for c in ranked if c.get("kind") == "food" and c.get("subtype") == "restaurant"]
+    # The "cafe" slot is food-only (cafe / fast food / dessert). Newer POI
+    # categories (museums, shops, wellness...) must not land in this slot —
+    # they belong in the second-activity filler path instead.
     cafes = [
         c for c in ranked
         if c.get("kind") in {"place", "food"}
-        and c.get("subtype") not in {None, "walk", "restaurant"}
+        and c.get("subtype") in {"cafe", "food", "fast_food", "ice_cream"}
     ]
     restaurants.sort(key=lambda c: -float(c.get("final_score") or 0))
     cafes.sort(key=lambda c: -float(c.get("final_score") or 0))
@@ -847,8 +1007,74 @@ def _is_flexible(step: dict) -> bool:
 # step (e.g. a 4-5h request inflating one cafe to ~190 min).
 _DUR_CAPS = {
     "restaurant": 90, "cafe": 90, "food": 90, "place": 90,
-    "indoor": 60, "book": 60, "rest": 45, "music": 180,
+    "indoor": 60, "book": 60, "rest": 45, "music": 30,
 }
+
+
+# At most this many generic rest/filler blocks may appear in one plan. Several
+# back-to-back buffers read as repeated filler rather than a real itinerary.
+_MAX_REST_BLOCKS = 1
+
+
+def _limit_rest_filler(plan: dict, max_rest_blocks: int = _MAX_REST_BLOCKS) -> dict:
+    """Collapse multiple generic rest blocks down to one, keeping time truthful.
+
+    A long request can leave genuine shortfall once every real stop is at its
+    per-kind cap; that leftover is honest, but repeating it as three identical
+    buffers is not. So we keep ONE rest block and re-home the removed minutes
+    onto the last FLEXIBLE step that still has headroom under _DUR_CAPS.
+
+    We deliberately never stretch a fixed step (movie runtime, travel, walk):
+    doing so is what produced the earlier "260-minute cafe" style bug. Any
+    minutes that no flexible step can absorb stay in the single retained buffer
+    so the plan total never silently under-fills the user's request.
+    """
+    steps = plan.get("steps") or []
+    rest_idx = [i for i, s in enumerate(steps) if s.get("kind") == "rest"]
+    if len(rest_idx) <= max_rest_blocks:
+        return plan
+
+    keep = rest_idx[0]
+    drop = rest_idx[max_rest_blocks:]
+    freed = sum(int(steps[i].get("duration_min") or 0) for i in drop)
+    steps = [s for i, s in enumerate(steps) if i not in set(drop)]
+
+    # Re-home freed time onto the last flexible step with headroom.
+    for s in reversed(steps):
+        if freed <= 0:
+            break
+        if s.get("kind") == "rest" or not _is_flexible(s):
+            continue
+        cap = _DUR_CAPS.get(s.get("kind"))
+        if not cap:
+            continue
+        headroom = cap - int(s.get("duration_min") or 0)
+        if headroom <= 0:
+            continue
+        add = min(headroom, freed)
+        s["duration_min"] = int(s.get("duration_min") or 0) + add
+        freed -= add
+
+    # Whatever no flexible step could absorb stays in the retained buffer, so
+    # the plan still covers the requested duration (flagged as an estimate).
+    if freed > 0 and keep < len(steps):
+        retained = next((s for s in steps if s.get("kind") == "rest"), None)
+        if retained is not None:
+            retained["duration_min"] = int(retained.get("duration_min") or 0) + freed
+            retained["title"] = "Remaining free time"
+            retained["why"] = (
+                "Unfilled time after every stop reached its realistic length. "
+                "Kept as free time rather than stretching one activity to an "
+                "unrealistic length."
+            )
+            retained["is_remainder"] = True
+
+    for n, s in enumerate(steps):
+        s["order"] = n + 1
+    plan["steps"] = steps
+    plan["total_duration_min"] = int(sum(int(s.get("duration_min") or 0) for s in steps))
+    plan["total_cost_inr"] = int(sum(int(s.get("cost_inr") or 0) for s in steps))
+    return plan
 
 
 def _clamp_step_duration(step: dict) -> dict:
@@ -1084,17 +1310,100 @@ def _music_why(steps: list[dict], lang: str | None = None) -> str:
 
 
 def _attach_music_tracks(plan: dict, music: list[dict]) -> None:
-    """Attach the live searched songs (from Spotify/iTunes) to every music step
-    so the plan surfaces real mood-based recommendations, not a template label."""
+    """Attach the live Spotify tracks to every music step
+    so the plan surfaces real mood-based recommendations, not a template label.
+
+    The step's duration is reconciled to the REAL playlist length (sum of the
+    attached tracks' durations) so the UI never shows e.g. "45 min" next to a
+    4-song, 14-minute playlist. Plan totals are recomputed afterwards to stay
+    internally consistent, and any time lost by the accurate playlist length is
+    soaked back into the most flexible non-music step so the requested duration
+    is still honoured.
+    """
     live = [t for t in (music or []) if t and t.get("title")]
+    music_steps = [s for s in (plan.get("steps") or []) if s.get("kind") == "music"]
     if not live:
+        # Music is Spotify-only. If Spotify returned nothing we must NOT show a
+        # fabricated playlist — flag the leg honestly and leave the plan valid.
+        for s in music_steps:
+            s["tracks"] = []
+            s["tracks_source"] = "spotify (no match)"
+            s["unavailable"] = True
         return
-    for s in plan.get("steps") or []:
-        if s.get("kind") == "music":
-            s["tracks"] = live[:8]
-            s["tracks_source"] = "live search (mood-matched)"
-            if "mix" in str(s.get("title")).lower():
-                s["title"] = f"{live[0]['title'].split(' — ')[0]} — calm wind-down mix"
+    # Tracks already used by an earlier music leg in THIS plan must not be
+    # reused, otherwise two legs in one plan show the same songs.
+    from moodos.spotify import _track_key
+
+    used_in_plan: set[str] = set()
+    for step_no, s in enumerate(music_steps):
+        target = max(1, int(s.get("duration_min") or 0) or 30)
+        # Rotate the pool per music step so two music legs never show the
+        # identical track list (they'd otherwise both start from live[0]).
+        offset = (step_no * 3) % len(live)
+        pool = live[offset:] + live[:offset]
+        sel: list[dict] = []
+        total_sec = 0
+        seen: set = set()
+        for t in pool:
+            key = _track_key(t)
+            if key in seen or key in used_in_plan:
+                continue
+            seen.add(key)
+            sec = int(t.get("duration_sec") or 0)
+            sel.append(t)
+            total_sec += sec
+            if total_sec >= target * 60 and len(sel) >= 5:
+                break
+        if not sel:
+            # Pool is exhausted (everything already used by a previous leg).
+            # Re-fall back to the whole pool rather than showing an empty leg.
+            sel = [t for t in live if _track_key(t) not in seen]
+            total_sec = sum(int(t.get("duration_sec") or 0) for t in sel)
+        if not sel:
+            sel = live[:8]
+            total_sec = sum(int(t.get("duration_sec") or 0) for t in sel)
+        used_in_plan.update(_track_key(t) for t in sel)
+        total_sec = sum(int(t.get("duration_sec") or 0) for t in sel)
+        s["tracks"] = sel
+        s["tracks_source"] = "spotify (live search, mood-matched)"
+        s["playlist_duration_min"] = round(total_sec / 60, 1)
+        if total_sec:
+            s["duration_min"] = max(1, int(round(total_sec / 60)))
+        if "mix" in str(s.get("title")).lower():
+            # Title the mix after a track that is actually IN this step, so
+            # distinct music legs get distinct names.
+            base = sel[0]["title"].split(" — ")[0] if sel else live[0]["title"].split(" — ")[0]
+            s["title"] = f"{base} — calm wind-down mix"
+
+    # Keep the plan totals the single source of truth (duration == sum of steps).
+    plan["total_duration_min"] = int(sum(int(x.get("duration_min") or 0) for x in plan["steps"]))
+    plan["total_cost_inr"] = int(sum(int(x.get("cost_inr") or 0) for x in plan["steps"]))
+    requested = int(plan.get("requested_minutes") or 0)
+    tol = int(plan.get("budget_fit", {}).get("tolerance_min") or 0)
+    if requested and plan["steps"]:
+        diff = plan["total_duration_min"] - requested
+        if diff < 0 and -diff > tol + 1:
+            flex = [
+                x for x in plan["steps"]
+                if _is_flexible(x) and x.get("kind") not in {"travel", "music"}
+            ]
+            if flex:
+                top = max(flex, key=lambda x: int(x.get("duration_min") or 0))
+                # Never push a step past its realistic dwell cap when soaking
+                # time back in; add capped buffers for any remainder instead.
+                cap = _DUR_CAPS.get(top.get("kind"), 120)
+                cur = int(top.get("duration_min") or 0)
+                take = min(-diff, max(0, cap - cur))
+                if take:
+                    top["duration_min"] = cur + take
+                    _add_buffer_steps(plan, -diff - take)
+                else:
+                    _add_buffer_steps(plan, -diff)
+                plan["total_duration_min"] = int(
+                    sum(int(x.get("duration_min") or 0) for x in plan["steps"])
+                )
+        plan["budget_fit"]["actual_min"] = plan["total_duration_min"]
+        plan["budget_fit"]["delta_min"] = plan["total_duration_min"] - requested
 
 
 def _best_filler(plan: dict, ranked: list[dict], shortfall: int, slots: dict | None = None) -> tuple[dict | None, bool]:
@@ -1183,21 +1492,101 @@ def _best_filler(plan: dict, ranked: list[dict], shortfall: int, slots: dict | N
     return None, False
 
 
+# Distinct filler flavours so a long request does not produce N identical
+# "Unhurried pacing" rows stacked on top of each other.
+_BUFFER_VARIANTS = (
+    ("Settling in / unhurried pause",
+     "A breather between stops so the evening does not feel rushed."),
+    ("Window to wander nearby",
+     "Spare time to look around the area and pick something up on the way."),
+    ("Slow stretch, no plans",
+     "Deliberate idle time — no obligation to be anywhere else yet."),
+    ("Coffee and a breather",
+     "A short pause to reset before the next part of the evening."),
+    ("Time to simply sit",
+     "Space to rest and let the mood settle before moving on."),
+    ("Free time, your call",
+     "Unscheduled time you can use however you like."),
+)
+
+
+def _add_buffer_steps(plan: dict, shortfall: int, max_buffers: int = 6) -> int:
+    """Absorb leftover time with additional capped pacing buffers.
+
+    Used only when every real flexible stop is already at its per-kind cap, so
+    the request (e.g. a 5-8h evening) cannot be met without padding. Each buffer
+    respects _DUR_CAPS['rest'], so a long request never produces one absurd
+    multi-hour step. Returns the minutes actually consumed.
+    """
+    if shortfall <= 0:
+        return 0
+    cap = _DUR_CAPS.get("rest", 45)
+    consumed = 0
+    # Vary the buffer wording so several buffers in one plan read as distinct
+    # parts of the evening instead of N identical "Unhurried pacing" rows.
+    # We keep every buffer (dropping them would silently shrink the plan below
+    # the user's requested duration) and instead interleave them with real,
+    # already-fetched places so the timeline never stacks filler back-to-back.
+    filler = _BUFFER_VARIANTS[:]
+    idx = 0
+    while shortfall > 0 and max_buffers > 0:
+        chunk = min(shortfall, cap)
+        title, why = filler[idx % len(filler)]
+        plan["steps"].append({
+            "order": len(plan["steps"]) + 1,
+            "kind": "rest",
+            "title": title,
+            "duration_min": chunk,
+            "cost_inr": 0,
+            "flexible": True,
+            "why": why,
+        })
+        shortfall -= chunk
+        consumed += chunk
+        max_buffers -= 1
+        idx += 1
+    return consumed
+
+
 def _collapse_rest_buffers(plan: dict) -> dict:
-    """Collapse duplicate/adjacent generic rest buffers into a SINGLE buffer per
-    trip, merging their flexible durations so the plan total is preserved."""
+    """Merge runs of adjacent generic rest buffers, never exceeding the rest cap.
+
+    A run of 3+ back-to-back buffers reads as repeated filler. We fold them
+    together while the combined duration still fits inside _DUR_CAPS['rest'],
+    which removes the visible repetition WITHOUT discarding time (dropping the
+    blocks outright would silently under-fill the user's requested duration).
+    If a run still exceeds the cap, it stays split rather than becoming one
+    absurd multi-hour step. Totals are recomputed from the surviving steps.
+    """
     steps = plan.get("steps", [])
-    rest_indices = [i for i, s in enumerate(steps) if s.get("kind") == "rest"]
-    if len(rest_indices) <= 1:
-        return plan
-    keep = steps[rest_indices[0]]
-    keep["duration_min"] = int(keep.get("duration_min") or 0) + sum(
-        int(steps[i].get("duration_min") or 0) for i in rest_indices[1:]
-    )
-    extra = set(rest_indices[1:])
-    out = [s for i, s in enumerate(steps) if i not in extra]
+    cap = _DUR_CAPS.get("rest", 45)
+    out: list[dict] = []
+    for s in steps:
+        if s.get("kind") == "rest" and out and out[-1].get("kind") == "rest":
+            prev = out[-1]
+            combined = int(prev.get("duration_min") or 0) + int(s.get("duration_min") or 0)
+            if combined <= cap:
+                prev["duration_min"] = combined
+                continue
+        out.append(s)
     for n, s in enumerate(out):
         s["order"] = n + 1
+    # Last-resort guard: never show the same buffer title twice in one plan.
+    seen_buffer_titles: set[str] = set()
+    for s in out:
+        if s.get("kind") != "rest":
+            continue
+        t = str(s.get("title") or "").strip().lower()
+        if not t:
+            continue
+        if t in seen_buffer_titles:
+            for alt_title, alt_why in _BUFFER_VARIANTS:
+                if alt_title.lower() not in seen_buffer_titles:
+                    s["title"] = alt_title
+                    s["why"] = alt_why
+                    t = alt_title.lower()
+                    break
+        seen_buffer_titles.add(t)
     plan["steps"] = out
     plan["total_duration_min"] = int(sum(int(s.get("duration_min") or 0) for s in out))
     plan["total_cost_inr"] = int(sum(int(s.get("cost_inr") or 0) for s in out))
@@ -1205,26 +1594,46 @@ def _collapse_rest_buffers(plan: dict) -> dict:
 
 
 def _travel_leg_for(lat1: float, lon1: float, lat2: float, lon2: float) -> dict:
-    """Build a travel leg between two stops: mode, distance (km), duration, ₹cost."""
-    km = round(max(haversine_km(lat1, lon1, lat2, lon2), 0.15), 2)
-    if km < 1.5:
-        mode, dur, cost, why = "walk", max(4, int(round(km * 12))), 0, \
-            "Short hop — walkable between stops."
-    elif km < 6:
-        mode, dur, cost, why = "drive", max(6, int(round(km * 1.6))), 0, \
-            "A few km apart — short auto/ride between stops."
+    """Build a travel leg between two stops: mode, distance (km), duration, ₹cost.
+
+    Uses real route data from the LocationService (OSRM driving + walking) when
+    available; otherwise a clearly-flagged haversine estimate. The route source
+    is surfaced on the leg so the UI can label "mapped" vs "estimate".
+    """
+    route = location_service.calculate_route(lat1, lon1, lat2, lon2)
+    km = round(max(route["distance_km"], 0.15), 2)
+    drive_min = route.get("drive_min")
+    walk_min = route.get("walk_min")
+    if route.get("source") == "osrm":
+        if km < 1.4 or (walk_min is not None and walk_min <= 35):
+            mode, dur, why, src = "walk", max(4, int(walk_min or 0)), \
+                "Short hop — walkable route matched on the map.", "osrm"
+        elif km < 9 and drive_min is not None:
+            mode, dur, why, src = "drive", max(6, int(drive_min)), \
+                "Route matched from road data.", "osrm"
+        else:
+            mode, dur, why, src = "transit", max(14, int(drive_min or km * 3.2)), \
+                "Farther apart — take a bus/metro (~₹30) between stops.", "osrm"
     else:
-        mode, dur, cost, why = "transit", max(14, int(round(km * 3.2))), 30, \
-            "Farther apart — take a bus/metro (~₹30) between stops."
+        if km < 1.5:
+            mode, dur, why, src = "walk", max(4, int(round(km * 12))), \
+                "Short hop — walkable between stops (estimate).", "estimate"
+        elif km < 6:
+            mode, dur, why, src = "drive", max(6, int(round(km * 1.6))), \
+                "A few km apart — short auto/ride between stops (estimate).", "estimate"
+        else:
+            mode, dur, why, src = "transit", max(14, int(round(km * 3.2))), \
+                "Farther apart — take a bus/metro (~₹30) between stops (estimate).", "estimate"
     return {
         "kind": "travel",
         "mode": mode,
         "title": f"Travel by {mode}",
         "duration_min": dur,
-        "cost_inr": cost,
+        "cost_inr": 0,
         "flexible": False,
         "distance_km": km,
         "distance_label": _fmt_km(km),
+        "route_source": src,
         "why": why,
     }
 
@@ -1244,7 +1653,22 @@ def _insert_travel_legs(plan: dict, ranked: list[dict], lat: float, lon: float) 
             b.get("_lat", lat), b.get("_lon", lon),
         )
         leg["from"] = (a.get("title") or "").strip()
-        leg["to"] = (b.get("title") or "").strip()
+        raw = (b.get("title") or "").strip()
+        # Strip ALL leading travel prefixes (handles double nesting)
+        prefixes_to_strip = (
+            "Walk to ","Drive to ","Travel to ",
+            "Ride to ","Take transit to ","Head to ",
+        )
+        for _ in range(3):  # max 3 passes to handle nesting
+            stripped = False
+            for p in prefixes_to_strip:
+                if raw.startswith(p):
+                    raw = raw[len(p):]
+                    stripped = True
+                    break
+            if not stripped:
+                break
+        leg["to"] = raw
         legs.append(leg)
         insert_after.setdefault(physical[i], []).append(leg)
     out: list[dict] = []
@@ -1292,6 +1716,75 @@ def _finalize_step_order_and_blurbs(plan: dict) -> dict:
     return plan
 
 
+def _fix_generic_place_names(plan: dict, ranked: list[dict]) -> dict:
+    """Replace any LLM-invented generic place names with real
+    ranked candidates. A step is considered generic when its title
+    contains no word longer than 4 chars that matches any candidate title."""
+    generic_markers = (
+        "quiet cafe", "nearby cafe", "a cafe", "warm beverage",
+        "light snack", "a restaurant", "nearby restaurant",
+        "a place", "nearby place",
+    )
+    place_kinds = {"cafe", "food", "place", "restaurant"}
+    real_candidates = [
+        c for c in ranked
+        if c.get("kind") in place_kinds
+        and c.get("title")
+        and not (c.get("title") or "").lower().startswith("nearby ")
+    ]
+    if not real_candidates:
+        return plan
+    used_titles = set()
+    for step in plan.get("steps", []):
+        if step.get("kind") not in place_kinds:
+            continue
+        title = (step.get("title") or "").lower()
+        is_generic = any(marker in title for marker in generic_markers)
+        if not is_generic:
+            used_titles.add(title)
+            continue
+        # Find best unused real candidate
+        for cand in real_candidates:
+            ctitle = (cand.get("title") or "").strip()
+            if ctitle.lower() not in used_titles:
+                step["title"] = ctitle
+                step["why"] = (
+                    step.get("why") or
+                    f"Real nearby spot matching your mood — {ctitle}."
+                )
+                used_titles.add(ctitle.lower())
+                break
+    return plan
+
+
+def _remove_llm_travel_steps(plan: dict) -> dict:
+    prefixes = ("walk to ","drive to ","travel to ",
+                "ride to ","head to ")
+    generic_walks = (
+        "quiet, reflective walk", "reflective walk",
+        "leisurely evening stroll", "evening stroll",
+        "short stroll", "gentle walk", "peaceful walk",
+        "quiet walk", "relaxing walk",
+    )
+    cleaned = []
+    for s in plan.get("steps", []):
+        title = (s.get("title") or "").lower().strip()
+        kind = (s.get("kind") or "").lower()
+        # Remove LLM travel steps
+        if any(title.startswith(p) for p in prefixes):
+            continue
+        # Remove generic invented walk steps (no real place)
+        if kind == "walk" and any(g in title for g in generic_walks):
+            continue
+        cleaned.append(s)
+    plan["steps"] = cleaned
+    plan["total_duration_min"] = int(
+        sum(int(s.get("duration_min") or 0) for s in cleaned))
+    plan["total_cost_inr"] = int(
+        sum(int(s.get("cost_inr") or 0) for s in cleaned))
+    return plan
+
+
 def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon: float,
                    cinema_items: list[dict] | None = None,
                    weather: dict | None = None) -> dict:
@@ -1305,10 +1798,11 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     fixed steps alone already exceed the budget, a step is dropped/swapped and
     the user is told why.
     """
+    plan = _remove_llm_travel_steps(plan)
     requested_min = float((slots.get("duration_hours") or 4)) * 60
     if requested_min <= 0 or not plan.get("steps"):
         return plan
-    tol = 0.10 * requested_min
+    tol = 0.03 * requested_min
     notes: list[str] = []
 
     # Ensure every step (incl. LLM-produced ones) carries a fixed/flexible flag,
@@ -1316,6 +1810,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     _tag_flexibility(plan)
     _ensure_explicit_movie(plan, list(cinema_items or []) + ranked, slots)
     _normalize_movie_steps(plan, list(cinema_items or []) + ranked, slots)
+    plan = _fix_generic_place_names(plan, ranked)
     # Clamp any over-long flexible dwell (LLM-emitted etc.) before travel legs
     # are computed, so the budget loop only ever works with realistic caps.
     _clamp_plan_durations(plan)
@@ -1354,7 +1849,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
                     break
                 if s.get("kind") == "music":
                     d = int(s.get("duration_min") or 0)
-                    inc = min(shortfall, 30, 180 - d)
+                    inc = min(shortfall, 30, max(0, _DUR_CAPS.get("music", 30) - d))
                     if inc > 0:
                         s["duration_min"] = d + inc
                         shortfall -= inc
@@ -1412,11 +1907,11 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
                         s["duration_min"] = cur + inc
                         shortfall -= inc
                 if shortfall > 0:
-                    # Truly extreme request (>~8h): every flexible stop is already
-                    # at its cap. Fold the residual into the longest stop (previous
-                    # behaviour) so the budget fit assert can still hold.
-                    top = max(flex, key=lambda s: int(s.get("duration_min") or 0))
-                    top["duration_min"] = int(top.get("duration_min") or 0) + shortfall
+                    # Every real stop is at its realistic cap. Absorb the residual
+                    # into extra capped pacing buffers instead of inflating ONE
+                    # cafe/place into a multi-hour stop (the cap is an invariant we
+                    # never break, even for very long requests).
+                    shortfall -= _add_buffer_steps(plan, shortfall)
                 shortfall = 0
             _renumber()
         else:
@@ -1454,6 +1949,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
 
     # Keep at most a single buffer per trip (merge any duplicates/adjacent rests).
     plan = _collapse_rest_buffers(plan)
+    plan = _limit_rest_filler(plan)
     dur = sum(int(s.get("duration_min") or 0) for s in plan["steps"])
     cost = sum(int(s.get("cost_inr") or 0) for s in plan["steps"])
     diff = dur - requested_min
@@ -1493,8 +1989,23 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
         "within_tolerance": abs(dur - requested_min) <= tol + 1,
         "fixed_unchanged": True,
     }
-    assert abs(dur - requested_min) <= tol + 1, \
-        f"budget fit failed: {dur} vs {requested_min} (±{tol:.0f})"
+    b = slots.get("budget_inr")
+    has_budget = b is not None
+    budget: float = float(b or 0)
+    plan["budget"] = {
+        "budget_inr": int(budget) if has_budget else None,
+        "total_cost_inr": cost,
+        "over_budget": bool(has_budget and cost > budget),
+        "excess_inr": int(max(0, cost - budget)) if has_budget else 0,
+        "percent_used": round(cost / budget * 100, 1)
+        if has_budget and budget > 0
+        else (100.0 if has_budget and cost > 0 else (0.0 if has_budget else None)),
+    }
+    if abs(dur - requested_min) > tol + 1:
+        log.warning(
+            "budget fit incomplete: %d vs %d (±%.0f) — returning best effort",
+            dur, requested_min, tol
+        )
     return plan
 
 
@@ -1507,29 +2018,51 @@ def run_pipeline(
     location_names: dict | None = None,
 ) -> dict[str, Any]:
     ensure_user(user_id)
+    resolved_meta = location_names if isinstance(location_names, dict) else {}
     lat = lat if lat is not None else settings.default_lat
     lon = lon if lon is not None else settings.default_lon
-    used_default_location = lat == settings.default_lat and lon == settings.default_lon
+    used_default_location = resolved_meta.get("source") == "default" or (
+        not resolved_meta and lat == settings.default_lat and lon == settings.default_lon
+        and not resolved_meta.get("gps_live")
+    )
     location = providers.reverse_geocode(lat, lon)
-    # A manual city/area (or any resolver-picked source) wins over a fresh
-    # reverse-geocode: Nominatim can fail and fall back to the default city,
-    # which would silently override what the user typed. The resolver already
-    # prefers user input > GPS > IP > default, so its names are authoritative.
-    if location_names:
-        for _k in ("city", "area", "state", "country", "display_name"):
-            if location_names.get(_k):
-                location = {**location, _k: location_names[_k]}
-        location["label"] = location_names.get("label") or location.get("label")
-        location["source"] = location_names.get("source") or location.get("source")
+    log.info(
+        "resolved location: lat=%.4f lon=%.4f → %s",
+        lat, lon, location
+    )
+    slots = extract_intent(message)
+    user_typed_city = (
+        resolved_meta.get("source") in {"user", "user-input"}
+        and bool((resolved_meta.get("city") or "").strip())
+    )
+    if user_typed_city:
+        city = resolved_meta["city"].strip()
+        location = {
+            **location,
+            "city": city,
+            "label": city,
+            "source": resolved_meta.get("source") or "user",
+        }
+        if resolved_meta.get("area"):
+            location["area"] = resolved_meta["area"]
+        slots["city"] = city
+    elif resolved_meta:
+        for _k in ("city", "area", "state", "country", "country_code", "display_name"):
+            if resolved_meta.get(_k):
+                location = {**location, _k: resolved_meta[_k]}
+        location["label"] = resolved_meta.get("label") or location.get("label")
+        location["source"] = resolved_meta.get("source") or location.get("source")
     decisions: list[dict] = []
     retrieval_path: list[str] = []
-
-    slots = extract_intent(message)
     if prompt_name:
         slots["workflow"] = prompt_name
-    # The NLU slot is default-seeded to the configured city; override it with
-    # the actually-resolved city so the planner is never told the wrong place.
-    slots["city"] = location.get("city") or settings.default_city
+    slots["city"] = (
+        location.get("city")
+        or (resolved_meta.get("city") if resolved_meta else None)
+        or settings.default_city
+    )
+    if location.get("city"):
+        location["label"] = location.get("city")
 
     # Derive mood/prefs from the already-extracted slots instead of re-running
     # the LLM twice (avoids 2 extra Groq round-trips per request).
@@ -1553,7 +2086,7 @@ def run_pipeline(
         "get_user_profile",
         user_id=user_id,
         query=message,
-        categories=["preference", "pattern", "feedback"],
+        categories=["preference", "pattern", "feedback", "episodic"],
     )["memories"]
     decisions.append({"diamond": "Does Mem0 contain relevant user memory?", "answer": bool(memories)})
     retrieval_path.append("mem0")
@@ -1601,16 +2134,22 @@ def run_pipeline(
     music_q = _derive_search_query(message, slots, "music", preferences)
     movie_q = _derive_search_query(message, slots, "movie", preferences)
     restaurant_mood = (slots.get("desired_mood") or slots.get("current_mood") or "").lower()
+    # Rotate the stylistic seed so an identical mood does not produce an
+    # identical Spotify result set every single evening.
+    music_q = _rotate_music_query(music_q, slots, weather, user_id)
 
     # --- Run all independent live lookups in parallel to cut latency ---
     # (cafe places, music, books, movies, restaurants, and — if going out — cinemas)
     def _movies():
+        lang = preferences.get("movie_language_code")
         if stay_home:
             retrieval_path.append("tmdb-streaming")
-            return mcp.call("search_home_movies", query=movie_q, limit=8,
-                            language=preferences.get("movie_language_code"))
-        return mcp.call("search_movies", query=movie_q,
-                        language=preferences.get("movie_language_code"))
+            return mcp.call("suggest_movies", query=movie_q, limit=8,
+                            watch_at_home=True, language=lang,
+                            region=slots.get("music_region") or "IN")
+        return mcp.call("suggest_movies", query=movie_q, limit=8,
+                        watch_at_home=False, language=lang,
+                        region=slots.get("music_region") or "IN")
 
     def _restaurants():
         retrieval_path.append("osm-restaurants")
@@ -1628,8 +2167,8 @@ def run_pipeline(
 
     tasks = {
         "weather": lambda: mcp.call("get_weather", lat=lat, lon=lon),
-        "places": lambda: mcp.call("find_nearby_places", lat=lat, lon=lon, q="cafe"),
-        "music": lambda: mcp.call("search_music", q=music_q, country=slots.get("music_region") or "IN"),
+        "places": lambda: mcp.call("find_nearby_places", lat=lat, lon=lon, q=None),
+        "music": lambda: mcp.call("search_music", q=music_q, country=slots.get("music_region") or "IN", limit=24),
         "books": lambda: mcp.call("search_books", q="comfort quiet contemporary"),
         "movies": _movies,
         "restaurants": _restaurants,
@@ -1651,13 +2190,17 @@ def run_pipeline(
 
     weather = results["weather"]
     places = results["places"]
-    music = results["music"]
+    music = _exclude_recent_tracks(results["music"], user_id)
     books = results["books"]
     streaming_movies = results["movies"] if stay_home else []
     movies = results["movies"]
     restaurants = results["restaurants"]
     cinemas: list[dict] = results["cinemas"] or []
-    cinema_items = _movie_candidates(cinemas, lat, lon)
+    cinema_items = _movie_candidates(
+        cinemas, lat, lon,
+        region=slots.get("music_region") or "IN",
+        films=None if stay_home else (movies if movies else None),
+    )
 
     if not rag_ok:
         retrieval_path.append("adaptive-fallback")
@@ -1694,13 +2237,29 @@ def run_pipeline(
         "review_quality": 7.5,
     }
 
-    pool: list[dict] = [] if stay_home else [seed_walk]
+    # A walk is only honest if it names a real green/open space. Prefer actual
+    # Overpass parks; fall back to the generic seed walk ONLY when none exist
+    # near the user, so we never present a fabricated place as real.
+    real_walks = providers.nearby_walks(lat, lon, limit=4) if not stay_home else []
+    if real_walks:
+        pool: list[dict] = list(real_walks)
+    else:
+        pool = [] if stay_home else [seed_walk]
     pool.extend(rag_hits)
     if not stay_home:
         pool.extend(places)
         pool.extend(restaurants)
     pool.extend(cinema_items)
     pool.extend(movies)
+    # Don't re-offer a movie we have already suggested to this user. Applied
+    # after every movie source is merged so no path can leak a repeat.
+    blocked_movies = _excluded_movie_titles(user_id)
+    if blocked_movies:
+        pool = [
+            it for it in pool
+            if not (it.get("kind") in {"movie", "streaming"}
+                    and _norm_title(it.get("title") or "") in blocked_movies)
+        ]
     pool.extend(music)
     pool.extend(books)
 
@@ -1727,13 +2286,25 @@ def run_pipeline(
     )
     plan = _plan_with_budget(plan_prompt, ranked, slots, weather)
     if not plan.get("steps"):
-        plan = _heuristic_plan(ranked, slots, weather)
+        try:
+            plan = _heuristic_plan(ranked, slots, weather)
+        except Exception as exc:
+            log.error("heuristic plan failed: %s", exc, exc_info=True)
+            plan = {
+                "steps": [],
+                "total_cost_inr": 0,
+                "total_duration_min": 0,
+                "explanation": "Could not build a plan — please try again.",
+                "uncertainty": [],
+                "_agent": "fallback-empty",
+            }
     plan = _assemble_plan(plan, ranked, slots, lat, lon, cinema_items, weather=weather)
     _attach_music_tracks(plan, music)
     mv_note = _movie_request_note(plan, slots)
     if mv_note:
         plan["explanation"] = (plan.get("explanation") or "") + mv_note
     _remember_suggestions(plan)
+    _record_shown_items(plan, user_id)
 
     reviews = []
     for item in ranked[:4]:
@@ -1751,7 +2322,7 @@ def run_pipeline(
         "location": {
             **location,
             "gps_live": not used_default_location,
-            "label": f"{location.get('area') or location.get('suburb') or 'Your area'}, {location.get('city') or settings.default_city}",
+            "label": f"{slots.get('city') or location.get('area') or 'Your area'}, {location.get('city') or settings.default_city}",
             "state_label": location.get("state") or "",
         },
         "ranked": ranked[:12],
@@ -1768,7 +2339,7 @@ def run_pipeline(
             "restaurants": {"tool": "search_restaurants" + (" (by mood)" if restaurant_mood else ""), "source": "Overpass/OSM (live)"},
             "cinemas": {"tool": "find_nearby_cinemas", "source": "Overpass/OSM (live)"},
             "movies": {"tool": "search_home_movies" if stay_home else "search_movies", "source": ("TMDB movie titles on real map cinemas; runtime from TMDB when available, runtime/showtime marked 'estimate' otherwise" if not stay_home else "streaming search")},
-            "music": {"tool": "search_music", "source": "iTunes / Spotify (live)"},
+            "music": {"tool": "search_music", "source": "Spotify (live, no fallback)"},
             "books": {"tool": "search_books", "source": "book search"},
             "knowledge": {"tool": "retrieve_knowledge" if rag_ok else "search_web_knowledge", "source": "RAG / web knowledge"},
             "memory": {"tool": "get_user_profile", "source": "Mem0"},

@@ -1,0 +1,8 @@
+INFO:     127.0.0.1:56317 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58410 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58410 - "GET /static/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61276 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61276 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61276 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:61276 - "POST /api/location/resolve HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64835 - "POST /api/plan HTTP/1.1" 200 OK

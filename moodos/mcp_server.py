@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from moodos import actions, providers
+from moodos.location_service import location_service
 from moodos.memory import mem0
 from moodos.nlu import extract_intent
 from moodos.rag import knowledge
@@ -20,12 +21,14 @@ class MoodOSMCPServer:
             "extract_preferences": self.extract_preferences,
             "get_user_profile": self.get_user_profile,
             "search_movies": self.search_movies,
+            "suggest_movies": self.suggest_movies,
             "search_books": lambda q: providers.search_books(q),
-            "search_music": lambda q, country="IN": providers.search_music(q, country=country),
+            "search_music": lambda q, country="IN", limit=5: providers.search_music(q, country=country, limit=limit),
             "search_restaurants": self.search_restaurants,
             "search_restaurants_by_mood": self.search_restaurants_by_mood,
             "get_weather": lambda lat, lon: providers.get_weather(lat, lon),
-            "find_nearby_places": lambda lat, lon, q="cafe": providers.nearby_places(lat, lon, q),
+            "find_nearby_places": lambda lat, lon, q=None, limit=24, radius_m=4000:
+                location_service.search_nearby_places(lat, lon, categories=q, limit=limit, radius_m=radius_m),
             "find_nearby_cinemas": lambda lat, lon, limit=6: providers.nearby_cinemas(lat, lon, limit),
             "retrieve_knowledge": lambda q, k=8: knowledge.retrieve(q, k),
             "search_web_knowledge": lambda q: providers.web_snippets(q),
@@ -90,6 +93,20 @@ class MoodOSMCPServer:
         live = providers.search_movies_tmdb(query, watch_at_home=watch_at_home, language=language)
         rag, _ = knowledge.retrieve(query, k=6, kinds=["movie"])
         return live or rag
+
+    def suggest_movies(self, query: str, limit: int = 8, watch_at_home: bool = False,
+                       language: str | None = None, region: str = "IN") -> list:
+        """Mood-aware movie suggestions for a plan (the tool run_pipeline calls).
+
+        Routes to the streaming-aware home search when the user is staying in,
+        otherwise to the plain TMDB search. Kept distinct from search_movies so
+        the plan path can request a limit/region without changing the legacy
+        endpoint contract.
+        """
+        if watch_at_home:
+            return self.search_home_movies(query, limit=limit, language=language)
+        return providers.search_movies_tmdb(query, limit=limit,
+                                            watch_at_home=False, language=language)
 
     def search_home_movies(self, query: str, limit: int = 8,
                            language: str | None = None) -> list:

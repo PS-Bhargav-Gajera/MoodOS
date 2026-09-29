@@ -73,19 +73,6 @@
     "source": "seed"
   },
   {
-    "id": "music:calm-acoustic",
-    "kind": "music",
-    "title": "Calming acoustic / lo-fi evening mix",
-    "text": "Soft guitar, low BPM, no drop. Fits exhausted to relaxed trajectory.",
-    "themes": ["acoustic", "lofi"],
-    "moods": ["calm", "refreshed"],
-    "intensity": "low",
-    "estimated_cost": 0,
-    "duration_min": 30,
-    "review_quality": 7.5,
-    "source": "seed"
-  },
-  {
     "id": "experience:cozy-evening",
     "kind": "experience",
     "title": "Cozy evening pattern",

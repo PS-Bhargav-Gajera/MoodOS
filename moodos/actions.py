@@ -4,96 +4,70 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-CINEMA_SHOWS = [
-    {
-        "provider": "MockProvider",
-        "cinema": "PVR Acropolis, Ahmedabad",
-        "lat": 23.0225,
-        "lon": 72.5419,
-        "movie": "The Lunchbox",
-        "time": "19:15",
-        "price_inr": 220,
-        "seats": "available",
-    },
-    {
-        "provider": "MockProvider",
-        "cinema": "Cinepolis Alpha One, Ahmedabad",
-        "lat": 23.0377,
-        "lon": 72.5389,
-        "movie": "Paddington in Peru",
-        "time": "18:40",
-        "price_inr": 250,
-        "seats": "available",
-    },
-    {
-        "provider": "MockProvider",
-        "cinema": "PVR Mutiplex Motera, Ahmedabad",
-        "lat": 23.1047,
-        "lon": 72.5961,
-        "movie": "Everything Everywhere All at Once",
-        "time": "20:00",
-        "price_inr": 260,
-        "seats": "available",
-    },
-    {
-        "provider": "MockProvider",
-        "cinema": "INOX Iscon Mall, Ahmedabad",
-        "lat": 23.0307,
-        "lon": 72.5080,
-        "movie": "Little Miss Sunshine",
-        "time": "17:50",
-        "price_inr": 230,
-        "seats": "available",
-    },
-]
+from moodos import providers
 
-MUSIC_PLAYLIST_NAMES = [
-    "MoodOS — calm acoustic evening",
-    "MoodOS — soft indie evening",
-    "MoodOS — lo-fi focus moments",
-    "MoodOS — gentle chill morning",
-]
-
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    import math
-
-    r = 6371
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+_EST_TIMES = ("17:50", "18:40", "19:15", "20:00", "21:10")
+_EST_PRICES = (220, 230, 250, 260, 240)
 
 
 def list_showtimes(
-    lat: float | None = None, lon: float | None = None, limit: int = 4
+    lat: float | None = None,
+    lon: float | None = None,
+    limit: int = 4,
+    region: str = "IN",
+    movies: list[dict] | None = None,
 ) -> list[dict]:
-    """Live-shaped data from CinemaBookingProvider mock — not a public BMS scrape.
+    """Pair live TMDB now-playing titles with estimated evening times.
 
-    When lat/lon are provided, shows are sorted by the driving distance from the
-    user to the nearest venue (nearest first).
+    There is no free India box-office / BMS feed, so times and prices are
+    explicitly marked as estimates. Cinema names and coordinates come from the
+    caller (real OSM venues), not a canned Ahmedabad list.
     """
-    shows = list(CINEMA_SHOWS)
-    if lat is not None and lon is not None:
-        def key(s: dict) -> float:
-            try:
-                return _haversine_km(lat, lon, float(s["lat"]), float(s["lon"]))
-            except (TypeError, ValueError, KeyError):
-                return 9999.0
+    films = movies if movies is not None else providers.tmdb_now_playing(region=region, limit=limit)
+    shows: list[dict] = []
+    for i, film in enumerate(films[:limit]):
+        title = film.get("title")
+        if not title:
+            continue
+        shows.append(
+            {
+                "provider": "TMDB now playing",
+                "cinema": None,
+                "lat": lat,
+                "lon": lon,
+                "movie": title,
+                "tmdb_id": film.get("tmdb_id"),
+                "overview": (film.get("text") or "")[:240],
+                "poster_url": film.get("poster_url"),
+                "original_language": film.get("original_language"),
+                "release_date": film.get("release_date"),
+                "time": _EST_TIMES[i % len(_EST_TIMES)],
+                "price_inr": _EST_PRICES[i % len(_EST_PRICES)],
+                "seats": "check at venue",
+                "showtime_estimated": True,
+                "source": film.get("source") or "tmdb-now-playing",
+            }
+        )
+    return shows
 
-        shows.sort(key=key)
-    return shows[:limit]
 
-
-def prepare_movie_booking(show_index: int = 0) -> dict[str, Any]:
-    show = CINEMA_SHOWS[show_index % len(CINEMA_SHOWS)]
+def prepare_movie_booking(show_index: int = 0, show: dict | None = None) -> dict[str, Any]:
+    live = show or (list_showtimes(limit=max(show_index + 1, 1)) or [None])[min(show_index, 0)]
+    if not live:
+        shows = list_showtimes(limit=4)
+        live = shows[show_index % len(shows)] if shows else {
+            "movie": "Tonight's screening",
+            "time": "19:15",
+            "price_inr": 220,
+            "showtime_estimated": True,
+            "provider": "TMDB now playing",
+        }
     return {
         "status": "prepared",
         "requires_confirmation": True,
-        "show": show,
+        "show": live,
         "expires_at": (datetime.now() + timedelta(minutes=8)).isoformat(timespec="seconds"),
-        "note": "No money is charged until confirm_movie_booking after explicit user confirmation.",
+        "note": "No money is charged. Showtime is an estimate — confirm at the cinema. This is not a live ticket purchase.",
     }
 
 
@@ -101,11 +75,11 @@ def confirm_movie_booking(confirmed: bool, show: dict | None = None) -> dict[str
     if not confirmed:
         return {"status": "aborted", "executed": False}
     return {
-        "status": "executed_mock",
+        "status": "recorded",
         "executed": True,
-        "provider": "CinemaBookingProvider.MockProvider",
-        "show": show or CINEMA_SHOWS[0],
-        "confirmation_code": "MOODOS-MOCK-4821",
+        "provider": "MoodOS (no live ticketing — confirm at the cinema)",
+        "show": show or {},
+        "confirmation_code": f"MOODOS-{datetime.now().strftime('%H%M%S')}",
     }
 
 
@@ -114,5 +88,5 @@ def prepare_food_order(item: dict) -> dict[str, Any]:
         "status": "prepared",
         "requires_confirmation": True,
         "item": item,
-        "provider": "FoodOrderingProvider.MockProvider",
+        "provider": "FoodOrderingProvider (no live order)",
     }

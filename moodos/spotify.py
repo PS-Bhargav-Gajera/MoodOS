@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import secrets
 import time
 from typing import Any
@@ -16,7 +17,10 @@ from moodos.config import DATA_DIR, settings
 
 log = logging.getLogger("moodos.spotify")
 TOKEN_PATH = DATA_DIR / "spotify_tokens.json"
-SCOPES = "playlist-modify-private playlist-modify-public user-read-email"
+SCOPES = (
+    "playlist-modify-private playlist-modify-public user-read-email "
+    "user-read-private user-top-read"
+)
 TIMEOUT = 15.0
 
 _app_token: dict[str, Any] = {"access": "", "expires": 0.0}
@@ -59,41 +63,104 @@ def app_access_token() -> str | None:
         return None
 
 
+def _search_with_token(token: str, query: str, limit: int, market: str, offset: int) -> tuple[int, list[dict]]:
+    with httpx.Client(timeout=TIMEOUT) as client:
+        r = client.get(
+            "https://api.spotify.com/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query, "type": "track", "limit": limit, "market": market, "offset": offset},
+        )
+    if r.status_code >= 400:
+        return r.status_code, []
+    items = []
+    for row in (r.json().get("tracks") or {}).get("items") or []:
+        artists = ", ".join(a.get("name", "") for a in row.get("artists") or [])
+        duration_ms = row.get("duration_ms") or 0
+        items.append(
+            {
+                "id": f"spotify:{row.get('id')}",
+                "uri": row.get("uri"),
+                "name": row.get("name"),
+                "artist": artists,
+                "title": f"{row.get('name')} — {artists}",
+                "kind": "music",
+                "text": f"{row.get('album', {}).get('name', '')} {artists}",
+                "preview_url": row.get("preview_url"),
+                "url": (row.get("external_urls") or {}).get("spotify"),
+                "source": "spotify",
+                "estimated_cost": 0,
+                "duration_min": round(duration_ms / 60000, 1) if duration_ms else 0,
+                "duration_sec": duration_ms // 1000 if duration_ms else 0,
+                "intensity": "low",
+            }
+        )
+    return r.status_code, items
+
+
+def _track_key(track: dict) -> str:
+    """Identity used for de-duplication: song title + artist, case/punctuation
+    insensitive.
+
+    Deliberately NOT the Spotify id: the same song appears under several ids
+    (different album, live/remix/stereo variants), which is how the identical
+    track ended up twice in one playlist.
+    """
+    name = str(track.get("name") or track.get("title") or "").split(" — ")[0]
+    artist = str(track.get("artist") or "")
+    if not artist and track.get("title"):
+        # title is "name — artists"; recover the artist half if name is absent
+        parts = str(track.get("title")).split(" — ", 1)
+        if len(parts) == 2:
+            name, artist = parts[0], parts[1]
+    key = f"{re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()}|" \
+          f"{re.sub(r'[^a-z0-9]+', ' ', artist.lower()).strip()}"
+    return key
+
+
+def _dedupe_tracks(tracks: list[dict]) -> list[dict]:
+    """Drop repeated songs, keeping first occurrence and its order."""
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for t in tracks:
+        key = _track_key(t)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(t)
+    if len(unique) != len(tracks):
+        log.info("spotify dedupe: %s -> %s tracks", len(tracks), len(unique))
+    return unique
+
+
 def search_tracks(query: str, limit: int = 8, market: str = "IN", offset: int = 0) -> list[dict]:
-    token = app_access_token()
-    if not token:
-        return []
+    """Live Spotify search. Prefers the connected user token (Premium), then
+    the app client-credentials token."""
+    # Spotify rejects track searches with limit > 10 (HTTP 400 "Invalid limit"),
+    # so clamp instead of letting the whole music leg fail.
+    limit = max(1, min(int(limit or 8), 10))
+    tokens = [t for t in (_user_access_token(), app_access_token()) if t]
+    seen: set[str] = set()
+    unique = []
+    for t in tokens:
+        if t in seen:
+            continue
+        seen.add(t)
+        unique.append(t)
     try:
-        with httpx.Client(timeout=TIMEOUT) as client:
-            r = client.get(
-                "https://api.spotify.com/v1/search",
-                headers={"Authorization": f"Bearer {token}"},
-                params={"q": query, "type": "track", "limit": limit, "market": market, "offset": offset},
-            )
-        if r.status_code >= 400:
-            log.warning("Spotify search failed: %s", r.status_code)
-            return []
-        items = []
-        for row in (r.json().get("tracks") or {}).get("items") or []:
-            artists = ", ".join(a.get("name", "") for a in row.get("artists") or [])
-            duration_ms = row.get("duration_ms") or 0
-            items.append(
-                {
-                    "id": f"spotify:{row.get('id')}",
-                    "uri": row.get("uri"),
-                    "title": f"{row.get('name')} — {artists}",
-                    "kind": "music",
-                    "text": f"{row.get('album', {}).get('name', '')} {artists}",
-                    "preview_url": row.get("preview_url"),
-                    "url": (row.get("external_urls") or {}).get("spotify"),
-                    "source": "spotify",
-                    "estimated_cost": 0,
-                    "duration_min": round(duration_ms / 60000, 1) if duration_ms else 0,
-                    "duration_sec": duration_ms // 1000 if duration_ms else 0,
-                    "intensity": "low",
-                }
-            )
-        return items
+        last_status = 0
+        for token in unique:
+            status, items = _search_with_token(token, query, limit, market, offset)
+            last_status = status
+            if items:
+                return _dedupe_tracks(items)
+            if status == 403:
+                log.warning("Spotify search 403 with a token; trying next credential")
+                continue
+            if status >= 400:
+                log.warning("Spotify search failed: %s", status)
+        if last_status:
+            log.warning("Spotify search empty (last status %s)", last_status)
+        return []
     except Exception as exc:
         log.warning("Spotify search error: %s", exc)
         return []

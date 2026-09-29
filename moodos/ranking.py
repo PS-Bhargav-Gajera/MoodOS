@@ -57,6 +57,12 @@ def _pref_match(item: dict, memories: list[dict], preferences: dict | None = Non
             score -= 0.4
         if "budget" in t and (item.get("estimated_cost") or 0) <= 350:
             score += 0.1
+        # Penalize places seen in recent episodic memories
+        if mem.get("category") == "episodic":
+            item_title = (item.get("title") or "").strip().lower()
+            mem_text = (mem.get("text") or "").lower()
+            if item_title and item_title in mem_text:
+                score -= 0.35
     # Structured preference signals (learned from happy reactions) give a SMALL,
     # bounded nudge — mood/budget/distance still dominate the weighted score.
     signals = preferences or {}

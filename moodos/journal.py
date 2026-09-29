@@ -87,7 +87,38 @@ def react_to_entry(user_id: str, entry_id: int, reaction: str) -> bool:
     """Record a 3-way reaction (happy/neutral/sad) on one journal entry."""
     if reaction not in REACTION_LABELS:
         raise ValueError(f"reaction must be one of {REACTION_LABELS}")
-    return db.update_mood_reaction(user_id, entry_id, reaction) if is_reactable_entry(user_id, entry_id) else False
+    if not is_reactable_entry(user_id, entry_id):
+        return False
+    saved = db.update_mood_reaction(user_id, entry_id, reaction)
+    if saved:
+        # Write outcome back to Mem0 so future plans learn from it
+        try:
+            entries = db.list_mood_entries(user_id, limit=50)
+            entry = next((e for e in entries if e.get("id") == entry_id), None)
+            if entry:
+                plan_text = entry.get("plan_summary") or entry.get("plan_kind") or "plan"
+                mood = entry.get("current_mood") or "unknown mood"
+                label = {"happy": "Enjoyed", "neutral": "Neutral about",
+                         "sad": "Did not enjoy"}[reaction]
+                memory_text = f"{label}: {plan_text} (mood was: {mood})"
+                from moodos.memory import mem0
+                mem0.add(
+                    user_id,
+                    memory_text,
+                    kind="contextual",
+                    confidence=0.8,
+                    category="feedback",
+                    metadata={
+                        "category": "feedback",
+                        "reaction": reaction,
+                        "entry_id": entry_id,
+                        "source": "user_reaction",
+                    },
+                    source="user_reaction",
+                )
+        except Exception as exc:
+            log.warning("reaction memory write skipped: %s", exc)
+    return saved
 
 
 def is_reactable_entry(user_id: str, entry_id: int) -> bool:

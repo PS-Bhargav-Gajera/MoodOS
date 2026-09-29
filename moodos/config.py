@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     default_lat: float = 23.0225
     default_lon: float = 72.5714
 
+    # Public OSM-family endpoints. All env-overridable so a self-hosted
+    # Overpass/OSRM/Nominatim can be pointed to without code changes.
+    overpass_url: str = "https://overpass-api.de/api/interpreter"
+    nominatim_url: str = "https://nominatim.openstreetmap.org"
+    osrm_url: str = "https://router.project-osrm.org"
+    # Minimum gap between public OSM API hits (ms) to keep rate limits happy.
+    osm_min_interval_ms: int = 900
+
     sqlite_path: Path = DATA_DIR / "moodos.db"
     chroma_dir: Path = DATA_DIR / "vectors"
     cache_path: Path = DATA_DIR / "ttl_cache.json"

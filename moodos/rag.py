@@ -28,7 +28,10 @@ class KnowledgeStore:
             docs.extend(json.loads(SEED_PATH.read_text(encoding="utf-8")))
         if ACQUIRED_PATH.exists():
             docs.extend(json.loads(ACQUIRED_PATH.read_text(encoding="utf-8")))
-        self.docs = docs
+        # Music is never static: it always comes live from Spotify. Drop any
+        # music doc (including a stale seed file on disk) so a fabricated
+        # "playlist" can never reach the candidate pool.
+        self.docs = [d for d in docs if d.get("kind") != "music"]
         self._fit()
 
     def _fit(self) -> None:

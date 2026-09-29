@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -77,12 +78,12 @@ def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
     cached = ttl_cache.get(key)
     if cached:
         return cached
-    url = "https://nominatim.openstreetmap.org/reverse"
+    url = f"{settings.nominatim_url.rstrip('/')}/reverse"
     try:
         with httpx.Client(timeout=TIMEOUT, headers=HEADERS) as client:
             data = client.get(
                 url,
-                params={"lat": lat, "lon": lon, "format": "jsonv2"},
+                params={"lat": lat, "lon": lon, "format": "jsonv2", "addressdetails": 1},
             ).json()
         addr = data.get("address") or {}
         cc = (addr.get("country_code") or "").lower()
@@ -126,7 +127,16 @@ def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
         ttl_cache.set(key, result, ttl_seconds=6 * 3600)
         return result
     except Exception:
-        return {"city": settings.default_city, "lat": lat, "lon": lon, "source": "fallback"}
+        return {
+            "city": None,
+            "area": "",
+            "state": None,
+            "country": None,
+            "country_code": "",
+            "lat": lat,
+            "lon": lon,
+            "source": "unavailable",
+        }
 
 
 def nearby_places(lat: float, lon: float, query: str = "cafe", limit: int = 8) -> list[dict]:
@@ -144,67 +154,150 @@ def nearby_places(lat: float, lon: float, query: str = "cafe", limit: int = 8) -
     return places
 
 
-def nearby_walks(lat: float, lon: float, limit: int = 5) -> list[dict]:
-    key = f"walks:{round(lat, 3)}:{round(lon, 3)}"
-    cached = ttl_cache.get(key)
-    if cached:
-        return cached
-    parks = _overpass_nearby(lat, lon, "park", limit=limit)
-    ttl_cache.set(key, parks, ttl_seconds=20 * 60)
-    return parks
+_OVERPASS_MIRRORS = (
+    None,  # use the configured primary first
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+)
 
 
-def nearby_cinemas(lat: float, lon: float, limit: int = 6) -> list[dict]:
-    """Find real cinema/theatre venues near the user from the OSM map."""
-    key = f"cinemas:{round(lat, 3)}:{round(lon, 3)}"
+def _overpass_query(query: str) -> dict | None:
+    """POST an Overpass QL query, trying mirrors until one answers.
+
+    The public overpass-api.de instance rate-limits aggressively and resets
+    connections (WinError 10054) under load, which would otherwise silently
+    empty the whole walk/place leg. Returns the parsed body, or None.
+    """
+    for mirror in _OVERPASS_MIRRORS:
+        url = mirror or settings.overpass_url
+        for attempt in range(2):
+            try:
+                with httpx.Client(timeout=20.0, headers=HEADERS) as client:
+                    resp = client.post(url, content=query)
+                if resp.status_code == 200:
+                    return resp.json()
+                if resp.status_code not in (429, 502, 503, 504):
+                    log.warning("overpass %s -> HTTP %s", url, resp.status_code)
+                    break
+            except Exception as exc:
+                log.warning("overpass %s attempt %s failed: %s", url, attempt + 1, exc)
+            time.sleep(1.2 * (attempt + 1))
+    return None
+
+
+def _overpass_walk_spots(lat: float, lon: float, limit: int = 8) -> list[dict]:
+    """Real, NAMED outdoor places to walk in, from the OSM map.
+
+    Parks alone are too sparse in dense Indian cities to reliably yield a
+    result, so we also accept public gardens, pedestrian streets and named
+    green/park areas. Only elements carrying a real OSM `name` are returned —
+    an unnamed polygon cannot be presented to the user as a real place.
+    """
+    key = f"walkspot:{round(lat, 3)}:{round(lon, 3)}"
     cached = ttl_cache.get(key)
-    if cached:
+    if cached is not None:
         return cached
     query = f"""
     [out:json][timeout:15];
     (
-      node["amenity"="cinema"](around:15000,{lat},{lon});
-      way["amenity"="cinema"](around:15000,{lat},{lon});
+      way(around:2500,{lat},{lon})["leisure"~"^(park|garden)$"];
+      node(around:2500,{lat},{lon})["leisure"~"^(park|garden)$"];
+      way(around:2500,{lat},{lon})["highway"="pedestrian"]["name"];
+      way(around:2500,{lat},{lon})["leisure"="nature_reserve"]["name"];
+      way(around:2500,{lat},{lon})["landuse"="recreation_ground"]["name"];
     );
-    out center {limit};
+    out center {limit * 3};
     """
-    venues = []
-    try:
-        with httpx.Client(timeout=18.0, headers=HEADERS) as client:
-            data = client.post("https://overpass-api.de/api/interpreter", content=query).json()
-        for el in data.get("elements") or []:
-            tags = el.get("tags") or {}
-            plat = el.get("lat") or (el.get("center") or {}).get("lat")
-            plon = el.get("lon") or (el.get("center") or {}).get("lon")
-            if plat is None or plon is None:
-                continue
-            name = tags.get("name") or tags.get("brand")
-            if not name:
-                continue  # no real venue name -> no usable step data
-            venues.append(
-                {
-                    "id": f"cinema-osm:{el.get('id')}",
-                    "title": f"{name} cinema",
-                    "name": name,
-                    "kind": "movie",
-                    "venue": True,
-                    "lat": float(plat),
-                    "lon": float(plon),
-                    "text": f"Movie theatre: {name}",
-                    "source": "overpass-cinema",
-                    "estimated_cost": 250,
-                    "duration_min": 140,
-                    "intensity": "low",
-                    "review_quality": 7.0,
-                    "has_venue": True,
-                }
-            )
-            if len(venues) >= limit:
-                break
-        ttl_cache.set(key, venues, ttl_seconds=24 * 3600)
-        return venues
-    except Exception:
+    spots: list[dict] = []
+    data = _overpass_query(query)
+    if data is None:
+        ttl_cache.set(key, [], ttl_seconds=5 * 60)
         return []
+    for el in data.get("elements") or []:
+        tags = el.get("tags") or {}
+        name = tags.get("name") or tags.get("name:en")
+        if not name:
+            continue
+        plat = el.get("lat") or (el.get("center") or {}).get("lat")
+        plon = el.get("lon") or (el.get("center") or {}).get("lon")
+        if plat is None or plon is None:
+            continue
+        leisure = tags.get("leisure") or ""
+        if tags.get("highway") == "pedestrian":
+            label = f"{name} (pedestrian street)"
+        elif leisure == "nature_reserve":
+            label = f"{name} (green space)"
+        elif leisure == "garden":
+            label = f"{name} garden"
+        elif tags.get("landuse") == "recreation_ground":
+            label = f"{name} recreation ground"
+        else:
+            label = f"{name} park"
+        spots.append({
+            "id": f"osm-walk:{el.get('type')}:{el.get('id')}",
+            "title": label,
+            "name": name,
+            "kind": "place",
+            "subtype": "walk",
+            "lat": float(plat),
+            "lon": float(plon),
+            "text": f"Walkable open space: {name} ({leisure or tags.get('highway') or 'green space'})",
+            "estimated_cost": 0,
+            "duration_min": 20,
+            "intensity": "low",
+            "outdoor": True,
+            "needs_clear_weather": True,
+            "source": "overpass",
+        })
+        if len(spots) >= limit:
+            break
+    ttl_cache.set(key, spots, ttl_seconds=30 * 60)
+    return spots
+
+
+def nearby_walks(lat: float, lon: float, limit: int = 5) -> list[dict]:
+    key = f"walks:{round(lat, 3)}:{round(lon, 3)}"
+    cached = ttl_cache.get(key)
+    if cached is not None:
+        return cached
+    spots = _overpass_walk_spots(lat, lon, limit=limit)
+    if not spots:
+        # Fall back to the amenity-based lookup already used for general POIs.
+        spots = _overpass_nearby(lat, lon, "park", limit=limit)
+    ttl_cache.set(key, spots, ttl_seconds=30 * 60)
+    return spots
+
+
+def nearby_cinemas(lat: float, lon: float, limit: int = 6) -> list[dict]:
+    """Find real cinema/theatre venues near the user from the OSM map."""
+    from moodos.location_service import location_service
+
+    places = location_service.search_nearby_places(
+        lat, lon, categories="cinema", radius_m=15000, limit=limit
+    )
+    venues = []
+    for p in places:
+        name = p.get("name") or p.get("title")
+        if not name:
+            continue
+        venues.append(
+            {
+                **p,
+                "id": p.get("id") or f"cinema-osm:{p.get('source_id')}",
+                "title": f"{name} cinema",
+                "name": name,
+                "kind": "movie",
+                "venue": True,
+                "text": f"Movie theatre: {name}",
+                "source": p.get("source") or "overpass-cinema",
+                "estimated_cost": p.get("estimated_cost") or 250,
+                "duration_min": 140,
+                "intensity": "low",
+                "review_quality": p.get("review_quality") or 7.0,
+                "has_venue": True,
+            }
+        )
+    return venues
 
 
 MOOD_CUISINE_MAP: dict[str, dict[str, Any]] = {
@@ -653,52 +746,21 @@ def search_books(query: str, limit: int = 5) -> list[dict]:
 
 
 def search_music(query: str, limit: int = 5, country: str = "IN", seed: int = 0) -> list[dict]:
+    """Live Spotify search — the single source of music truth.
+
+    There is deliberately NO iTunes/seed fallback: an invented or generic
+    catalogue entry is worse than an honest empty list, and every track we
+    surface must be playable on the user's own Spotify account.
+    """
     key = f"music:{query}|{country}|seed={seed}"
     cached = ttl_cache.get(key)
     if cached:
         return cached
     from moodos import spotify as spotify_api
 
-    spotify_tracks = spotify_api.search_tracks(query, limit=limit, market=country, offset=seed * limit)
-    if spotify_tracks:
-        ttl_cache.set(key, spotify_tracks, ttl_seconds=6 * 3600)
-        return spotify_tracks
-    url = "https://itunes.apple.com/search"
-    try:
-        # iTunes has no offset — pull a larger pool and slice a seed window.
-        pool_size = min(200, (seed + 1) * limit)
-        with httpx.Client(timeout=TIMEOUT, headers=HEADERS) as client:
-            data = client.get(
-                url,
-                params={
-                    "term": query,
-                    "media": "music",
-                    "limit": pool_size,
-                    "country": country,
-                },
-            ).json()
-        rows = data.get("results") or []
-        tracks = []
-        for row in rows[seed * limit : seed * limit + limit]:
-            duration_ms = row.get("trackTimeMillis") or 0
-            tracks.append(
-                {
-                    "id": f"itunes:{row.get('trackId')}",
-                    "title": f"{row.get('trackName')} — {row.get('artistName')}",
-                    "kind": "music",
-                    "text": f"{row.get('primaryGenreName', '')} {row.get('collectionName', '')}",
-                    "preview_url": row.get("previewUrl"),
-                    "source": "itunes-search",
-                    "estimated_cost": 0,
-                    "duration_min": round(duration_ms / 60000, 1) if duration_ms else 0,
-                    "duration_sec": duration_ms // 1000 if duration_ms else 0,
-                    "intensity": "low",
-                }
-            )
-        ttl_cache.set(key, tracks, ttl_seconds=6 * 3600)
-        return tracks
-    except Exception:
-        return []
+    tracks = spotify_api.search_tracks(query, limit=limit, market=country, offset=seed * limit)
+    ttl_cache.set(key, tracks, ttl_seconds=20 * 60)
+    return tracks
 
 
 def _movie_year(release_date: str | None) -> int | None:
@@ -792,53 +854,124 @@ def _disambiguation_confident(hit: dict | None, query_title: str) -> bool:
     return True
 
 
+def _tmdb_movie_from_row(row: dict, watch_at_home: bool = False, source: str = "tmdb") -> dict:
+    tmdb_id = row.get("id")
+    movie = {
+        "id": f"{source}:{tmdb_id}",
+        "tmdb_id": tmdb_id,
+        "title": row.get("title") or row.get("name"),
+        "original_title": row.get("original_title") or "",
+        "original_language": (row.get("original_language") or "").lower(),
+        "year": _movie_year(row.get("release_date")),
+        "popularity": float(row.get("popularity") or 0.0),
+        "vote_count": int(row.get("vote_count") or 0),
+        "kind": "movie",
+        "text": row.get("overview") or "",
+        "source": source,
+        "estimated_cost": 0 if watch_at_home else 220,
+        "duration_min": None,
+        "runtime_source": "estimate",
+        "intensity": "low",
+        "vote": row.get("vote_average"),
+        "poster_url": f"https://image.tmdb.org/t/p/w342{row['poster_path']}" if row.get("poster_path") else None,
+        "release_date": row.get("release_date"),
+        "genre_ids": row.get("genre_ids") or [],
+        "watch_at_home": watch_at_home,
+    }
+    if watch_at_home:
+        movie["subtype"] = "streaming"
+        movie["estimated_cost"] = 0
+    return movie
+
+
 def search_movies_tmdb(query: str, limit: int = 6, watch_at_home: bool = False,
                        language: str | None = None) -> list[dict]:
-    """Search movies on TMDB. If watch_at_home is True, marks results as streaming
-    candidates. When language (TMDB 2-letter code e.g. 'hi') is supplied the
-    results are biased to that language via TMDB with_original_language."""
+    """Search movies on TMDB. Language is a TMDB 2-letter original-language code
+    (e.g. 'hi'); search/movie does not accept with_original_language, so we
+    filter locally and fill from discover/now-playing when the query is thin."""
     if not settings.tmdb_api_key:
         return []
     key = f"tmdb:{query}:home={watch_at_home}:lang={language or ''}"
     cached = ttl_cache.get(key)
     if cached:
         return cached
-    params = {"query": query, "include_adult": "false"}
+    data = _tmdb_json("search/movie", {"query": query, "include_adult": "false"})
+    movies = [_tmdb_movie_from_row(row, watch_at_home) for row in (data.get("results") or [])]
+    if language:
+        filtered = [m for m in movies if m.get("original_language") == language.lower()]
+        movies = filtered or movies
+    if len(movies) < limit:
+        extra = tmdb_discover_movies(
+            language=language, watch_at_home=watch_at_home, limit=limit
+        )
+        seen = {m.get("tmdb_id") for m in movies}
+        for item in extra:
+            if item.get("tmdb_id") not in seen:
+                movies.append(item)
+                seen.add(item.get("tmdb_id"))
+    movies = movies[:limit]
+    for movie in movies:
+        runtime_min = _tmdb_runtime_min(movie.get("tmdb_id"))
+        if runtime_min:
+            movie["duration_min"] = runtime_min
+            movie["runtime_source"] = "tmdb"
+        elif watch_at_home:
+            movie["duration_min"] = 0
+    if movies:
+        ttl_cache.set(key, movies, ttl_seconds=6 * 3600)
+    return movies
+
+
+def tmdb_now_playing(region: str = "IN", limit: int = 8, watch_at_home: bool = False) -> list[dict]:
+    """Films currently in theatres for a region (free TMDB now_playing)."""
+    if not settings.tmdb_api_key:
+        return []
+    region = (region or "IN").upper()
+    key = f"tmdb-now:{region}:home={watch_at_home}:{limit}"
+    cached = ttl_cache.get(key)
+    if cached:
+        return cached
+    data = _tmdb_json("movie/now_playing", {"region": region, "page": 1})
+    movies = [
+        _tmdb_movie_from_row(row, watch_at_home, source="tmdb-now-playing")
+        for row in (data.get("results") or [])
+    ][:limit]
+    if movies:
+        ttl_cache.set(key, movies, ttl_seconds=3 * 3600)
+    return movies
+
+
+def tmdb_discover_movies(
+    language: str | None = None,
+    genre_ids: list[int] | None = None,
+    region: str = "IN",
+    watch_at_home: bool = False,
+    limit: int = 8,
+) -> list[dict]:
+    """Mood/language-biased catalogue via TMDB discover (free)."""
+    if not settings.tmdb_api_key:
+        return []
+    region = (region or "IN").upper()
+    gkey = ",".join(str(g) for g in (genre_ids or []))
+    key = f"tmdb-disc:{region}:{language or ''}:{gkey}:home={watch_at_home}:{limit}"
+    cached = ttl_cache.get(key)
+    if cached:
+        return cached
+    params: dict[str, Any] = {
+        "include_adult": "false",
+        "sort_by": "popularity.desc",
+        "region": region,
+        "watch_region": region,
+    }
     if language:
         params["with_original_language"] = language
-    data = _tmdb_json(
-        "search/movie",
-        params,
-    )
-    movies = []
-    for row in (data.get("results") or [])[:limit]:
-        tmdb_id = row.get("id")
-        runtime_min = _tmdb_runtime_min(tmdb_id)
-        movie = {
-            "id": f"tmdb:{tmdb_id}",
-            "tmdb_id": tmdb_id,
-            "title": row.get("title"),
-            "original_title": row.get("original_title") or "",
-            "original_language": (row.get("original_language") or "").lower(),
-            "year": _movie_year(row.get("release_date")),
-            "popularity": float(row.get("popularity") or 0.0),
-            "vote_count": int(row.get("vote_count") or 0),
-            "kind": "movie",
-            "text": row.get("overview") or "",
-            "source": "tmdb",
-            "estimated_cost": 0 if watch_at_home else 220,
-            "duration_min": runtime_min if runtime_min else (0 if watch_at_home else None),
-            "runtime_source": "tmdb" if runtime_min else "estimate",
-            "intensity": "low",
-            "vote": row.get("vote_average"),
-            "poster_url": f"https://image.tmdb.org/t/p/w342{row['poster_path']}" if row.get("poster_path") else None,
-            "release_date": row.get("release_date"),
-            "genre_ids": row.get("genre_ids") or [],
-            "watch_at_home": watch_at_home,
-        }
-        if watch_at_home:
-            movie["subtype"] = "streaming"
-        movies.append(movie)
+    if genre_ids:
+        params["with_genres"] = "|".join(str(g) for g in genre_ids)
+    data = _tmdb_json("discover/movie", params)
+    movies = [
+        _tmdb_movie_from_row(row, watch_at_home, source="tmdb-discover")
+        for row in (data.get("results") or [])
+    ][:limit]
     if movies:
         ttl_cache.set(key, movies, ttl_seconds=6 * 3600)
     return movies

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -21,8 +22,31 @@ from moodos.orchestrator import handle_message
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 
+log = logging.getLogger("moodos.app")
+
 app = FastAPI(title="MoodOS", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+import traceback
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    log.error(
+        "Unhandled exception on %s: %s\n%s",
+        request.url,
+        exc,
+        traceback.format_exc(),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "type": type(exc).__name__,
+            "plan": None,
+            "explanation": "Server error — check logs for details.",
+        },
+    )
 
 
 class PlanRequest(BaseModel):
@@ -32,7 +56,9 @@ class PlanRequest(BaseModel):
     lon: float | None = None
     prompt: str | None = None
     user_label: str | None = None
+    city: str | None = None
     ip: str | None = None
+    accuracy_m: float | None = None
 
 
 class LocationResolveRequest(BaseModel):
@@ -40,6 +66,7 @@ class LocationResolveRequest(BaseModel):
     lon: float | None = None
     user_label: str | None = None
     ip: str | None = None
+    accuracy_m: float | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -96,19 +123,28 @@ def health() -> dict:
 
 
 @app.post("/api/plan")
-def plan(req: PlanRequest, request: Request) -> dict:
+def plan(req: PlanRequest, request: Request, background: BackgroundTasks) -> dict:
     if not req.message.strip():
         raise HTTPException(400, "message required")
     ip = req.ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     ip = None if ip in {"127.0.0.1", "::1", "localhost"} or not ip else ip
-    resolved = resolve_location(req.lat, req.lon, req.user_label, ip)
+    resolved = resolve_location(req.lat, req.lon, req.user_label, ip, accuracy_m=req.accuracy_m)
+    location_names = {}
+    city_input = (req.city or "").strip()
+    if city_input:
+        location_names = {
+            "city": city_input,
+            "area": city_input,
+            "label": city_input,
+            "source": "user-input",
+        }
     bundle = handle_message(
         req.message.strip(),
         req.user_id,
         resolved["lat"],
         resolved["lon"],
         req.prompt,
-        location_names=resolved,
+        location_names=location_names if location_names else resolved,
     )
     if isinstance(bundle, dict):
         bundle.setdefault("location", {})["resolver"] = {
@@ -121,14 +157,60 @@ def plan(req: PlanRequest, request: Request) -> dict:
             "area": resolved["area"],
             "state": resolved["state"],
         }
+        # Fire-and-forget AFTER the response is built, so a slow/failed Mem0
+        # call can never delay or break the plan the user is waiting on.
+        background.add_task(_remember_suggestions_bg, req.user_id, bundle)
     return bundle
+
+
+def _remember_suggestions_bg(user_id: str, bundle: dict) -> None:
+    """Persist what we just showed to Mem0, in the background.
+
+    Runs as a FastAPI BackgroundTask: any failure is logged and swallowed.
+    Repeat-suppression itself does NOT depend on this (that is handled by the
+    durable SQLite shown_items log in the orchestrator) — this is an extra
+    audit trail so a "what did you show me" memory exists in Mem0 too.
+    """
+    try:
+        steps = ((bundle.get("plan") or {}).get("steps")) or []
+        movies = [
+            s.get("title") for s in steps
+            if str(s.get("kind") or "").lower() in {"movie", "streaming"} and s.get("title")
+        ]
+        if movies:
+            mem0.add(
+                user_id,
+                "Suggested movie: " + ", ".join(movies[:3]),
+                kind="episodic",
+                confidence=0.5,
+                category="episodic",
+                metadata={"kind": "suggested_movie", "titles": movies[:3]},
+                source="plan",
+            )
+        tracks = [
+            t.get("title")
+            for s in steps if str(s.get("kind") or "").lower() == "music"
+            for t in (s.get("tracks") or []) if t.get("title")
+        ]
+        if tracks:
+            mem0.add(
+                user_id,
+                "Suggested songs: " + ", ".join(tracks[:8]),
+                kind="episodic",
+                confidence=0.5,
+                category="episodic",
+                metadata={"kind": "suggested_tracks", "count": len(tracks)},
+                source="plan",
+            )
+    except Exception as exc:  # never surface to the caller
+        log.warning("background mem0 suggestion write failed: %s", exc)
 
 
 @app.post("/api/location/resolve")
 def location_resolve(req: LocationResolveRequest, request: Request) -> dict:
     ip = req.ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     ip = None if ip in {"127.0.0.1", "::1", "localhost"} or not ip else ip
-    return resolve_location(req.lat, req.lon, req.user_label, ip)
+    return resolve_location(req.lat, req.lon, req.user_label, ip, accuracy_m=req.accuracy_m)
 
 
 @app.post("/api/feedback")
@@ -198,6 +280,21 @@ def mem0_update_one(memory_id: str, req: MemoryUpdateRequest) -> dict:
 def mem0_delete_one(memory_id: str, user_id: str = "demo") -> dict:
     removed = mem0.remove_one(user_id, memory_id)
     return {"ok": removed}
+
+
+@app.delete("/api/memory/all")
+async def delete_all_memories(user_id: str = "demo"):
+    """Delete all memories for a user at once."""
+    try:
+        result = mem0.delete(user_id)
+        return {
+            "success": True,
+            "deleted": result,
+            "message": "All memories cleared."
+        }
+    except Exception as exc:
+        log.error("delete all memories failed: %s", exc)
+        return {"success": False, "error": str(exc)}
 
 
 @app.post("/api/booking/prepare")
