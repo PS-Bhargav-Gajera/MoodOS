@@ -135,6 +135,55 @@ def _norm_title(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
 
 
+def _cat_group(item: dict) -> str:
+    """Rough category bucket used to merge the same venue across sources."""
+    kind = str(item.get("kind") or "")
+    subtype = str(item.get("subtype") or "")
+    if kind in {"food", "cafe"} or subtype in {"restaurant", "cafe", "food", "fast_food", "ice_cream"}:
+        return "food"
+    if kind == "place" and subtype in {"walk", "park"}:
+        return "park"
+    if kind in {"movie", "streaming"}:
+        return "cinema"
+    if kind == "place":
+        return "indoor"
+    return kind or "other"
+
+
+def _dedupe_pool(pool: list[dict]) -> list[dict]:
+    """Merge the same real-world venue that arrived from several tools.
+
+    find_nearby_places and search_restaurants both return the canteen across
+    the street, under different ids and slightly different coordinates, so the
+    plan could offer it twice. Two items collide when their normalized titles
+    match AND they share a category group (food / park / cinema). The richer
+    item wins: higher final_score, or — before scoring — the one with more
+    fields filled in.
+    """
+    def _richness(d: dict) -> int:
+        return sum(bool(d.get(k)) for k in (
+            "address", "phone", "website", "rating", "opening_hours",
+            "cuisine", "text", "lat", "lon", "distance_km",
+        ))
+
+    def _better(a: dict, b: dict) -> dict:
+        sa, sb = float(a.get("final_score") or 0.0), float(b.get("final_score") or 0.0)
+        if sa != sb:
+            return a if sa > sb else b
+        return a if _richness(a) >= _richness(b) else b
+
+    kept: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    for item in pool:
+        key = (_norm_title(item.get("title") or item.get("name") or ""), _cat_group(item))
+        if not key[0] or key not in kept:
+            kept[key] = item
+            order.append(key)
+            continue
+        kept[key] = _better(kept[key], item)
+    return [kept[k] for k in order]
+
+
 def _derive_search_query(message: str, slots: dict, kind: str,
                          preferences: dict | None = None) -> str:
     """Build a natural, message-driven search query for a media kind.
@@ -413,8 +462,8 @@ def _attach_geo(step: dict, ranked: list[dict]) -> dict:
         step["walk_min"] = step.get("walk_min") or _walk_min(step.get("distance_km"))
     return step
 
-PLAN_PROMPT = """You are MoodOS Experience Planner (Gemini-first).
-Build ONE coherent sequence, not a dump of isolated items.
+PLAN_PROMPT = """You are MoodOS Experience Planner.
+Build ONE coherent evening from the candidates below, in real time order.
 Return JSON:
 {{
   "steps": [{{"order":1,"kind":"walk|cafe|food|restaurant|movie|streaming|music","title":"","duration_min":0,"cost_inr":0,"why":""}}],
@@ -424,28 +473,20 @@ Return JSON:
   "uncertainty": []
 }}
 Rules:
-- Stay within budget_inr and duration_hours * 60 minutes total.
-- NEVER invent a generic walk or a place that is not in ranked candidates.
-  A walk step is allowed only when a real park/garden title is in the list.
-- NEVER create travel steps. Travel legs are added automatically.
-- Use ONLY place titles from the ranked candidates list verbatim.
-  Never invent place names.
-- You MUST spend at least 60% of budget_inr across the steps.
-  With ₹1200 budget, total cost_inr across steps must be >= ₹720.
-- budget_inr is the TOTAL for the whole group. Candidate estimated_cost is
-  per-person: every cost_inr you write must be the group total
-  (per-person price x party_size). "Rs5000 for 5 friends" means the steps
-  together may spend up to ₹5000, each step's cost being 5x the ticket price.
-  Include a movie step (cost ~₹220 x party_size) if duration_hours >= 3
-  and stay_home is false.
-- Prefer quiet/low intensity if intensity is low.
-- If stay_home is true, use kind=streaming not movie.
-- Maximum 5 steps total. No filler steps.
+1. Use ONLY titles from the candidates list, copied exactly. Never invent a place, walk or venue. If a kind has no candidate, leave it out.
+2. budget_inr and duration_hours*60 are LIMITS, not targets. Do not pad the plan to use all the budget or time. A shorter honest plan beats filler.
+3. budget_inr is the total for the whole group. Candidate costs are per person, so cost_inr = per-person price x party_size.
+4. Pick stops that move the mood from current_mood to desired_mood, and prefer low intensity if intensity is low. Mix different kinds (for example park, then food, then something indoors). Never put two stops of the same kind back to back. Never use the same title twice in one plan. If you run out of different candidates, leave the plan shorter.
+5. List steps in the order they really happen. Any "why" that says before or after must match that order.
+6. Movie: include one ONLY if the user asked for a movie, or its genre is verified light or neutral, AND a real cinema is paired with it in the cinema list, AND runtime plus travel fits the time. If the tone is unverified, never call it light, gentle or low-intensity; say the tone is unverified. Otherwise leave movies out.
+7. Music: at most one music step, only if the user mentioned music or the mood clearly calls for it, and only tracks in the language the user asked for.
+8. Do not create travel steps or free-time steps. Travel is added automatically.
+9. Maximum 5 steps. If stay_home is true use kind=streaming instead of movie and do not suggest going out.
 User slots: {slots}
 Mem0: {memory}
 Weather: {weather}
-Ranked candidates: {candidates}
-Live cinema pairings (TMDB now-playing + OSM venues; showtimes estimated): {shows}
+Candidates (grouped by kind): {candidates}
+Live cinema pairings (TMDB now-playing + real venues; showtimes estimated): {shows}
 """
 
 
@@ -467,6 +508,38 @@ def _memory_block(memories: list[dict], max_items: int = 5, max_len: int = 140) 
             text = text[: max_len - 1].rstrip() + "…"
         lines.append(f"[{label}] {text}")
     return "\n".join(lines) or "None on file."
+
+
+def _group_candidates(items: list[dict]) -> dict[str, list[dict]]:
+    """Bucket candidates by kind for the planner prompt.
+
+    ranked[:12] let Spotify tracks crowd out parks and food (a stressed-user
+    plan showed 5 music tracks, 1 walk and 1 movie with zero cafés). Give the
+    LLM the best of each kind instead, music collapsed to one playlist title.
+    """
+    def _sort(xs: list[dict]) -> list[dict]:
+        return sorted(xs, key=lambda x: x.get("final_score") or 0.0, reverse=True)
+
+    parks = [i for i in items if i.get("kind") == "place"
+             and i.get("subtype") in {"walk", "park"}]
+    food = [i for i in items if i.get("kind") == "food"
+            or (i.get("kind") == "place"
+                and i.get("subtype") in {"cafe", "food", "fast_food", "ice_cream"})
+            or i.get("subtype") in {"restaurant", "cafe"}]
+    movies = [i for i in items if i.get("kind") == "movie"
+              and not i.get("watch_at_home")]
+    music = [i for i in items if i.get("kind") == "music"]
+    taken = {id(i) for i in parks + food + movies + music}
+    other = [i for i in items if id(i) not in taken]
+    return {
+        "parks_walks": _sort(parks)[:4],
+        "restaurants_cafes": _sort(food)[:5],
+        "movies": _sort(movies)[:3],
+        "music": [{"kind": "music",
+                   "title": (i.get("title") or i.get("name") or "").strip()}
+                  for i in _sort(music)[:1]],
+        "other": _sort(other)[:2],
+    }
 
 
 def _plan_with_budget(prompt: str, ranked: list, slots: dict, weather: dict) -> dict[str, Any]:
@@ -916,8 +989,7 @@ def _swap_step_kind(cand: dict) -> str:
 
 
 def _diversity_why(cand: dict, orig_cls: str) -> str:
-    desc = _venue_descriptor(cand)
-    return f"Swapped for variety — {desc} instead of two {orig_cls} stops back-to-back."
+    return "A different kind of stop for a better mix."
 
 
 def _diversify_consecutive_stops(
@@ -1017,7 +1089,7 @@ def _is_flexible(step: dict) -> bool:
 # step (e.g. a 4-5h request inflating one cafe to ~190 min).
 _DUR_CAPS = {
     "restaurant": 90, "cafe": 90, "food": 90, "place": 90,
-    "indoor": 60, "book": 60, "rest": 45, "music": 30,
+    "indoor": 60, "book": 60, "rest": 20, "music": 30,
 }
 
 
@@ -1046,7 +1118,13 @@ def _limit_rest_filler(plan: dict, max_rest_blocks: int = _MAX_REST_BLOCKS) -> d
 
     keep = rest_idx[0]
     drop = rest_idx[max_rest_blocks:]
-    freed = sum(int(steps[i].get("duration_min") or 0) for i in drop)
+    # R3: a rest may never exceed its cap, so an over-long input rest is
+    # clamped. The overflow counts as freed time for re-homing below.
+    rest_cap = _DUR_CAPS.get("rest", 20)
+    kept = int(steps[keep].get("duration_min") or 0)
+    freed = max(0, kept - rest_cap)
+    steps[keep]["duration_min"] = min(kept, rest_cap)
+    freed += sum(int(steps[i].get("duration_min") or 0) for i in drop)
     steps = [s for i, s in enumerate(steps) if i not in set(drop)]
 
     # Re-home freed time onto the last flexible step with headroom.
@@ -1065,19 +1143,18 @@ def _limit_rest_filler(plan: dict, max_rest_blocks: int = _MAX_REST_BLOCKS) -> d
         s["duration_min"] = int(s.get("duration_min") or 0) + add
         freed -= add
 
-    # Whatever no flexible step could absorb stays in the retained buffer, so
-    # the plan still covers the requested duration (flagged as an estimate).
-    if freed > 0 and keep < len(steps):
+    # Whatever no flexible step could absorb is accepted as an honest shorter
+    # plan (the budget loop already emits the shortfall note). We never grow a
+    # rest into a long "Remaining free time" block, and never let a rest exceed
+    # its cap — that is fake time-fill, not a real activity.
+    cap = _DUR_CAPS.get("rest", 20)
+    if freed > 0:
         retained = next((s for s in steps if s.get("kind") == "rest"), None)
         if retained is not None:
-            retained["duration_min"] = int(retained.get("duration_min") or 0) + freed
-            retained["title"] = "Remaining free time"
-            retained["why"] = (
-                "Unfilled time after every stop reached its realistic length. "
-                "Kept as free time rather than stretching one activity to an "
-                "unrealistic length."
-            )
-            retained["is_remainder"] = True
+            cur = int(retained.get("duration_min") or 0)
+            add = max(0, min(cap - cur, freed))
+            if add:
+                retained["duration_min"] = cur + add
 
     for n, s in enumerate(steps):
         s["order"] = n + 1
@@ -1452,43 +1529,74 @@ def _best_filler(plan: dict, ranked: list[dict], shortfall: int, slots: dict | N
             "why": _music_why(plan["steps"], lang),
         }, False)
 
-    # 2) Second short mood-aligned activity from the pool (not already used).
-    for cand in ranked:
-        ctitle = (cand.get("title") or "").strip().lower()
-        if not ctitle or ctitle in used:
-            continue
+    # 2) A real unused candidate whose kind DIFFERS from the previous stop —
+    # food first, then an indoor place, then a park — so leftover time becomes
+    # a genuine next stop instead of rest padding. No candidate of a different
+    # kind is "giving up", which is honest; the caller shortens the plan.
+    prev_step = next(
+        (s for s in reversed(plan["steps"])
+         if s.get("kind") not in {"travel", "music", "rest"}),
+        None,
+    )
+
+    def _cls(step_like: dict) -> str:
+        k = str(step_like.get("kind") or "")
+        st = str(step_like.get("subtype") or "")
+        if k in {"food", "cafe"} or st in {"restaurant", "cafe", "food", "fast_food", "ice_cream"}:
+            return "food"
+        if k == "place" and st in {"walk", "park"}:
+            return "park"
+        if k in {"place", "indoor"}:
+            return "indoor"
+        return ""
+
+    prev_cls = _cls(prev_step) if prev_step else ""
+
+    def _pool_filler(cand: dict) -> tuple[dict, bool] | None:
         ckind = cand.get("kind")
-        if ckind in {"place", "food", "cafe"}:
-            vname = (cand.get("title") or "").strip()
-            vtext = (cand.get("text") or "").strip()
-            desc = _venue_descriptor(cand)
-            extra = ""
-            if vtext:
-                ex = vtext
-                if vname:
-                    ex = re.sub(re.escape(vname), "", ex, flags=re.IGNORECASE)
-                ex = re.sub(
-                    r"\b(cafe|restaurant|food|fast food|ice cream|ice_cream|parlour|"
-                    r"stall|snacks|farsan|sweets|dessert|eating place|eatery)\b",
-                    "", ex, flags=re.IGNORECASE,
-                )
-                ex = ex.strip(" .,-—–:;()").strip()
-                if ex:
-                    extra = f" ({ex})"
-            why = (
-                f"Round out the evening with {desc} at {vname}{extra} — a real, "
-                f"nearby option that fits a relaxed mood."
+        vname = (cand.get("title") or "").strip()
+        vtext = (cand.get("text") or "").strip()
+        desc = _venue_descriptor(cand)
+        extra = ""
+        if vtext:
+            ex = vtext
+            if vname:
+                ex = re.sub(re.escape(vname), "", ex, flags=re.IGNORECASE)
+            ex = re.sub(
+                r"\b(cafe|restaurant|food|fast food|ice cream|ice_cream|parlour|"
+                r"stall|snacks|farsan|sweets|dessert|eating place|eatery)\b",
+                "", ex, flags=re.IGNORECASE,
             )
-            return ({
-                "kind": "place" if ckind == "place" else "cafe",
-                "title": cand.get("title"),
-                "duration_min": min(shortfall, 30),
-                "cost_inr": int(cand.get("estimated_cost") or 0) * party_size(slots),
-                "flexible": True,
-                "why": why,
-                "lat": cand.get("lat"),
-                "lon": cand.get("lon"),
-            }, True)
+            ex = ex.strip(" .,-—–:;()").strip()
+            if ex:
+                extra = f" ({ex})"
+        why = (
+            f"Round out the evening with {desc} at {vname}{extra} — a real, "
+            f"nearby option that fits a relaxed mood."
+        )
+        return ({
+            "kind": "place" if ckind == "place" else "cafe",
+            "title": cand.get("title"),
+            "duration_min": min(shortfall, 30),
+            "cost_inr": int(cand.get("estimated_cost") or 0) * party_size(slots),
+            "flexible": True,
+            "why": why,
+            "lat": cand.get("lat"),
+            "lon": cand.get("lon"),
+        }, True)
+
+    for want in ("food", "indoor", "park"):
+        if want == prev_cls:
+            continue
+        for cand in ranked:
+            ctitle = (cand.get("title") or "").strip().lower()
+            if not ctitle or ctitle in used:
+                continue
+            if _cls(cand) != want:
+                continue
+            picked = _pool_filler(cand)
+            if picked:
+                return picked
 
     # 3) Single bare buffer — only if enough of a gap and none already placed.
     if shortfall >= 5 and not has_bare:
@@ -1816,6 +1924,34 @@ def _budget_fit(plan: dict, requested_min: float, tol: float) -> dict[str, Any]:
     }
 
 
+def _remove_duplicate_stops(plan: dict, notes: list[str]) -> dict:
+    """Drop any later stop whose title repeats an earlier one, keeping the first.
+
+    The LLM could emit the same venue twice, so the plan would visit Scoop N
+    Munch, then later Scoop N Munch again. Travel legs are rebuilt afterwards
+    from the surviving stops, so they never point at a dropped repeat.
+    """
+    steps = plan.get("steps") or []
+    seen: set[str] = set()
+    kept: list[dict] = []
+    for s in steps:
+        if s.get("kind") == "travel":
+            kept.append(s)
+            continue
+        title = (s.get("title") or "").strip()
+        key = _norm_title(title)
+        if key and key in seen:
+            notes.append(
+                f"Removed a repeated stop ({title}) so every stop in your plan is different."
+            )
+            continue
+        if key:
+            seen.add(key)
+        kept.append(s)
+    plan["steps"] = kept
+    return plan
+
+
 def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon: float,
                    cinema_items: list[dict] | None = None,
                    weather: dict | None = None) -> dict:
@@ -1835,6 +1971,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
         return plan
     tol = _BUDGET_TOL_FRACTION * requested_min
     notes: list[str] = []
+    accepted_short = False
 
     # Ensure every step (incl. LLM-produced ones) carries a fixed/flexible flag,
     # and pin real movie runtimes + showtime disclaimers from ranked candidates.
@@ -1842,6 +1979,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     _ensure_explicit_movie(plan, list(cinema_items or []) + ranked, slots)
     _normalize_movie_steps(plan, list(cinema_items or []) + ranked, slots)
     plan = _fix_generic_place_names(plan, ranked)
+    plan = _remove_duplicate_stops(plan, notes)
     # Clamp any over-long flexible dwell (LLM-emitted etc.) before travel legs
     # are computed, so the budget loop only ever works with realistic caps.
     _clamp_plan_durations(plan)
@@ -1965,13 +2103,23 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
                     if inc > 0:
                         s["duration_min"] = cur + inc
                         shortfall -= inc
-                if shortfall > 0:
-                    # Every real stop is at its realistic cap. Absorb the residual
-                    # into extra capped pacing buffers instead of inflating ONE
-                    # cafe/place into a multi-hour stop (the cap is an invariant we
-                    # never break, even for very long requests).
-                    shortfall -= _add_buffer_steps(plan, shortfall)
-                shortfall = 0
+            if shortfall > 0:
+                if shortfall > 20:
+                    # Every real candidate is used and the residual is bigger
+                    # than a single pacing buffer. Accept the shorter plan and
+                    # tell the user, instead of padding with a long free-time
+                    # block. Emit the note once and stop fitting.
+                    if not accepted_short:
+                        notes.append(
+                            f"Only {shortfall} minutes of real nearby activities were "
+                            f"found, so this plan is shorter than the "
+                            f"{requested_min / 60:g} hours you asked for."
+                        )
+                        accepted_short = True
+                    _renumber()
+                    break
+                shortfall -= _add_buffer_steps(plan, shortfall)
+            shortfall = 0
             _renumber()
         else:
             # Over budget. NEVER shrink a fixed duration (movie runtime / travel /
@@ -2012,7 +2160,10 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     dur = sum(int(s.get("duration_min") or 0) for s in plan["steps"])
     cost = sum(int(s.get("cost_inr") or 0) for s in plan["steps"])
     diff = dur - requested_min
-    if abs(diff) > tol + 1 and plan["steps"]:
+    # When we already accepted a shorter plan (honest shortfall note emitted),
+    # do NOT force-fit by padding a flexible step — that would re-introduce the
+    # fake time-fill this rule exists to prevent.
+    if abs(diff) > tol + 1 and plan["steps"] and not accepted_short:
         # Last-resort force-fit: only flexible steps may be adjusted. If none
         # remain and we're still over, drop the smallest fixed stop instead.
         flexible = [s for s in plan["steps"] if _is_flexible(s)]
@@ -2375,6 +2526,8 @@ def run_pipeline(
         ]
     pool.extend(music)
     pool.extend(books)
+    pool = _dedupe_pool(pool)
+    restaurants = _dedupe_pool(restaurants)
 
     budget = float(slots.get("budget_inr") or 1000)
     minutes = float(slots.get("duration_hours") or 4) * 60
@@ -2394,7 +2547,7 @@ def run_pipeline(
         slots=slots,
         memory=_memory_block(memories),
         weather=weather,
-        candidates=ranked[:12],
+        candidates=_group_candidates(ranked),
         shows=cinema_items,
     )
     plan = _plan_with_budget(plan_prompt, ranked, slots, weather)

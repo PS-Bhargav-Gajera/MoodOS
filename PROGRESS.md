@@ -12,6 +12,9 @@ find_nearby_places, search_restaurants and find_nearby_cinemas all use Overpass.
 [ ] B1 defaults  [ ] B2 vague input  [ ] B3 movie rule  [ ] B4 music rule  [ ] B5 source labels  [ ] T1 transport test
 [x] P1a fallback_places module (not wired into any tool)
 [x] P1b Overpass budget 8s + fallback_places wired into the 3 location tools
+[x] R1 PLAN_PROMPT replaced (budget floor and forced-movie rule removed)
+[x] R2 grouped candidates for planner prompt (ranked unchanged downstream)
+[x] R3 honest leftover-time logic (rest cap 20, different-kind filler, shortfall note)
 
 ## Log
 ### A1 timeouts
@@ -101,3 +104,89 @@ Mumbai  find_nearby_places   count=24 source=nominatim                          
 Mumbai  search_restaurants   count=10 source=nominatim                                elapsed=1.63s
 Mumbai  find_nearby_cinemas  count= 3 source=nominatim                                elapsed=1.74s
 ```
+### R1 PLAN_PROMPT
+- Edit: replaced the `PLAN_PROMPT` constant in `moodos/orchestrator.py` with the exact text supplied for step R1. Removed the old budget-floor rule ("You MUST spend at least 60% of budget_inr…") and the old forced-movie rule ("Include a movie step … if duration_hours >= 3 and stay_home is false"). Kept the five placeholders `{slots} {memory} {weather} {candidates} {shows}` and the doubled braces in the JSON schema. The only other reference (`plan_prompt = PLAN_PROMPT.format(...)` in the same file) is unchanged.
+- Quick check result:
+```
+no-80pct OK
+no-movie-forced OK
+format OK 1970
+```
+### P1b live restart
+- Diagnosis of the pasted Ahmedabad plan: the server answering /api/plan had PID 3492 started 08:53:44, while the P1b edits landed 12:22-12:24, so it was running pre-P1b code (no fallback, hence "unavailable (provider error, no data returned)" on all three location tools). Killed PID 3492, confirmed port 8000 free, relaunched uvicorn app:app (127.0.0.1:8000) with the current code. Health check:
+```
+health: 200 {"ok":true,"groq":true,"gemini":true,"mem0":true,"spotify":true,"spotify_user":true,"cost":"free-tier / local retrieval"}
+```
+### R2 grouped candidates
+- Edit: in `moodos/orchestrator.py` `run_pipeline`, replaced only the `candidates=ranked[:12]` argument with `candidates=_group_candidates(ranked)`. New helper `_group_candidates` (added right after `_memory_block`) buckets `ranked` by kind, each bucket sorted by `final_score` desc: top 4 parks/walks (`kind=="place"` and `subtype in {"walk","park"}`), top 5 restaurants+cafes (`kind=="food"` or `subtype in {"cafe","food","fast_food","ice_cream","restaurant"}`), top 3 movies (`kind=="movie"` and not `watch_at_home`), top 1 music collapsed to `[{"kind":"music","title":...}]` (playlist title only, never the 24-track list), and top 2 of everything else (deduped by identity). The `ranked` list itself is untouched — later stages still use it in full.
+- Quick check result (fake pool: 24 music, 24 places, 10 restaurants):
+```
+{'parks_walks': 0, 'restaurants_cafes': 5, 'movies': 0, 'music': 1, 'other': 0}
+grouped candidates OK: >=3 restaurants
+```
+### R3 honest leftover-time logic
+- Edits in `moodos/orchestrator.py`: (1) `_DUR_CAPS["rest"]` 45 -> 20. (2) `_best_filler` step 2 now only offers a real unused candidate whose kind DIFFERS from the previous physical stop, tried in order food -> indoor place -> park; no different-kind candidate means it returns None (giving up) instead of padding. (3) In `_assemble_plan`, when the residual shortfall is >20 min after every real candidate is used: emit a single `budget_notes` entry "Only {N} minutes of real nearby activities were found, so this plan is shorter than the {H} hours you asked for.", set `accepted_short`, break the fit loop, and skip the last-resort force-fit so nothing re-pads the plan. Residual <=20 min still becomes one small rest buffer. (4) `_diversity_why` returns the plain "A different kind of stop for a better mix." (no more "Swapped for variety"). (5) `_limit_rest_filler` clamps an over-long input rest to the rest cap and never inflates a rest into a "Remaining free time" block.
+- Stale tests updated to the new contract (they asserted the old pad-to-requested-time behavior): `test_pipeline.py::test_assemble_plan_spreads_shortfall_not_all_into_one_cafe` (now expects actual_min < 300 + a budget note), and 4 buffer tests in `test_repeat_avoidance.py` (rest cap 20, honest shortfall instead of conservation).
+- Quick check (3 real stops, 300-minute request, real weather so no auto-indoor step):
+```
+rests: [('Relaxed pacing / rest', 10)]
+notes: ['Only 68 minutes of real nearby activities were found, so this plan is shorter than the 5 hours you asked for.']
+total_duration_min: 232
+OK: no rest > 20 min and shortfall note present
+```
+- Full suite: `347 passed, 1 warning in 40.69s`
+
+### D1 duplicate places removed at the data layer
+- Test first: new `tests/test_dedupe_places.py`, 4 tests, all FAILING (`_dedupe_places` missing from `moodos.fallback_places`; `_dedupe_pool` missing from `moodos.orchestrator`; `nearby_restaurants` returned the 4-row fallback list untouched).
+- Edits after the failure was shown:
+  - `moodos/fallback_places.py`: added `_norm_name()` (lowercase letters+digits only) and `_dedupe_places()` — two results are duplicates when their normalized names match AND they sit within 100 m, or when they share the same `source_id`; the first one is kept. `fallback_places()` now pipes its list through `_dedupe_places()` before the distance sort.
+  - `moodos/providers.py::nearby_restaurants`: the P1b fallback branch now calls `_dedupe_places(fallback_places(...))` before returning.
+  - `moodos/orchestrator.py`: added `_cat_group()` (food / park / cinema / indoor) and `_dedupe_pool()` — keyed on (normalized title, category group), keeps the item with the higher `final_score`, or before scoring the one with more fields filled. `run_pipeline` now runs `pool = _dedupe_pool(pool)` after the pool is built and before scoring, and `restaurants = _dedupe_pool(restaurants)` for the bundle.
+- Quick check: `tests/test_dedupe_places.py` -> `4 passed in 2.02s` (the fake "Law Canteen(F2)" x2 same-id and "Pharma Canteen(F1)" x2 under 50 m rows collapse to 2 items; the same canteen arriving from both places and restaurants survives into the pool once).
+- Full suite: `351 passed, 1 warning in 29.12s`.
+- Note: `pytest -q` at the repo root errors on a pre-existing basename clash — the T1 transport probe `test_overpass.py` in the repo root vs `tests/test_overpass.py`. Run with `--ignore=test_overpass.py` (probe left in place per T1).
+
+### D2 no repeated stops in a plan
+- Test first: new `tests/test_no_repeated_stops.py`, both tests FAILING (`ImportError: cannot import name '_remove_duplicate_stops' from 'moodos.orchestrator'`).
+- Edits after the failure was shown:
+  - `PLAN_PROMPT` rule 4 now ends with "Never use the same title twice in one plan. If you run out of different candidates, leave the plan shorter."
+  - `moodos/orchestrator.py`: new `_remove_duplicate_stops(plan, notes)` — walks the steps in order, keeps the first step for each `_norm_title()` key, drops any later non-travel step whose normalized title was already seen, and appends one `notes` entry per removed title: "Removed a repeated stop (<title>) so every stop in your plan is different."
+  - `_assemble_plan` calls it right after `_fix_generic_place_names` and before `_clamp_plan_durations` / `_insert_travel_legs`, so travel legs are rebuilt from the surviving stops only.
+  - `_best_filler` already skips titles in `used` (built from every step title) at both the music leg and the pool-filler loop — re-checked, still true, nothing changed.
+- Quick check: `tests/test_no_repeated_stops.py` -> `2 passed in 1.86s`. The plan [Scoop N Munch, Law Canteen(F2), Scoop N Munch, Law Canteen(F2), music] ends with the three unique stops in order, 2 budget_notes, and exactly `len(physical)-1` travel legs connecting only the surviving physical stops.
+- Full suite: `353 passed, 1 warning in 36.89s` (351 before, +2 new; none dropped).
+
+### U1 User-Agent
+- Edit: `moodos/providers.py:19` HEADERS User-Agent -> `MoodOS/0.1 (student project; https://github.com/PS-Bhargav-Gajera/moodos)`.
+- Checked every Nominatim call site imports that same HEADERS dict: `providers.reverse_geocode` (:117), `providers._nominatim_nearby` (:879), `fallback_places._nominatim_search` (:203, which does `from moodos.providers import HEADERS` at :37), and `location_service._http_get_json`/`_http_post_json` (:193/:200, HEADERS imported at :40). `location_service.reverse_geocode` delegates to `providers.reverse_geocode`, so it inherits it too. No call site builds its own User-Agent.
+- Quick check (httpx transport stub, no network), printing the User-Agent each path actually puts on the wire:
+```
+fallback_places Nominatim UA: MoodOS/0.1 (student project; https://github.com/PS-Bhargav-Gajera/moodos)
+providers.reverse_geocode UA: MoodOS/0.1 (student project; https://github.com/PS-Bhargav-Gajera/moodos)
+providers._nominatim_nearby UA: MoodOS/0.1 (student project; https://github.com/PS-Bhargav-Gajera/moodos)
+location_service._http_get_json UA: MoodOS/0.1 (student project; https://github.com/PS-Bhargav-Gajera/moodos)
+matches providers.HEADERS: OK
+```
+
+### A4 result cache + 24h stale copy
+- Test first: new `tests/test_a4_cache.py`, 2 of 3 FAILING before the change (`AssertionError: {'n': 2}` — second call re-queried Overpass; and `RuntimeError` / `assert [] == ['Scoop N Munch']` — no stale copy existed to serve).
+- Edits after the failures were shown:
+  - `moodos/cache.py`: added `TTLCache.get_raw(key)` — same read as `get()` but ignores the entry's `expires`, so a stale copy can still be retrieved. Existing `ttl_cache` module and every other caller untouched.
+  - `moodos/location_service.py` `search_nearby_places`: cache key is now `poi:{lat}:{lon}:{cat}:{radius}` (category before radius, `limit` dropped — the result is capped to `limit` before it is cached, so a cache hit already satisfies any smaller request). Final result (Overpass *or* fallback) cached `ttl_seconds=6*3600`, plus a `:stale` twin at `24*3600`. When Overpass fails *and* the fallback returns nothing, `ttl_cache.get_raw(stale_key)` is served with `log.warning("serving stale cache for %s", key)`; `ProviderUnavailable` still raised in `strict` mode with no stale copy available.
+  - `moodos/providers.py` `nearby_restaurants`: same 6h + 24h stale twin. Two fixes the failing test exposed: the hit test was `if cached:` (an empty list re-queried Overpass forever) -> `if cached is not None:`; and the element parser used `el.get("lat") or (el.get("center") or {}).get("lat")`, which dropped a legitimate coordinate of `0.0` -> explicit `is not None`.
+- Two pre-existing bugs found and fixed in passing, both in `providers.nearby_restaurants`: (a) the empty-list cache-hit bug above, and (b) the `0.0`-coordinate `or` bug, which silently discarded any venue sitting on the equator or prime meridian.
+- Test fixture note: the first fake venue was named "Law Canteen(F2)", which `_institutional_flag` correctly rejected as a staff/campus-only canteen, so nothing was parsed and nothing was cached. Renamed the fixture to "Saganwala Restaurant".
+- Quick check, per the step (real call, `28.6139, 77.2090`, `find_nearby_places` does not exist — the public API is `location_service.search_nearby_places`):
+```
+first call: 12.536s
+second call: 0.000s
+second under 0.5s: True
+titles equal: True
+n titles: 24
+```
+  Overpass timed out on attempt 1 and the budget expired before attempt 2, so the 24 titles came from the Nominatim fallback — i.e. this also confirms the *fallback* path, not only Overpass, lands in the cache.
+- Test file: `tests/test_a4_cache.py` -> `3 passed in 0.15s` (second call 0.000s-0.003s on both the Overpass-mocked and restaurants-mocked paths; the third test asserts the stale copy is returned and that `strict=True` still raises when no stale copy exists).
+- Full suite: `356 passed, 1 warning in 42.01s` (353 before, +3 new; none dropped).
+- Note: `tests/test_a4_cache.py` lives in `tests/` next to `tests/test_overpass.py`, so it is imported as `test_a4_cache` and does not hit the root-basename clash; the `--ignore=test_overpass.py` flag is still required for the same reason as before.
+
+- [x] A4 result cache (6h) + stale copy (24h) for search_nearby_places and nearby_restaurants

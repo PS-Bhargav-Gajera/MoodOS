@@ -292,8 +292,12 @@ def test_assemble_plan_spreads_shortfall_not_all_into_one_cafe():
     }
     result = _assemble_plan(plan, ranked, slots, lat, lon, [], weather={"rainy": False})
     cafe = next(s for s in result["steps"] if s.get("kind") == "cafe")
-    assert cafe["duration_min"] <= _DUR_CAPS["cafe"]  # never a 3-hour cafe
-    assert result["budget_fit"]["within_tolerance"]  # still hits ~5h overall
+    # The cafe must never balloon into a multi-hour stop. It is now capped at
+    # _DUR_CAPS and the leftover is accepted as an honest shortfall (with a
+    # budget note), not padded out to 5h with fake rest blocks.
+    assert cafe["duration_min"] <= _DUR_CAPS["cafe"]
+    assert result["budget_fit"]["actual_min"] < 300
+    assert result["budget_notes"]  # user is told the plan is shorter
 
 
 def test_hard_filter_rejects_placeholder_titles():

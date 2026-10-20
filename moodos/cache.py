@@ -46,5 +46,11 @@ class TTLCache:
             self._data[key] = {"value": value, "expires": time.time() + ttl_seconds}
             self._save()
 
+    def get_raw(self, key: str) -> Any | None:
+        """Read a value ignoring its expiry (stale-copy reads only)."""
+        with _lock:
+            item = self._data.get(key)
+            return None if not item else item["value"]
+
 
 ttl_cache = TTLCache()

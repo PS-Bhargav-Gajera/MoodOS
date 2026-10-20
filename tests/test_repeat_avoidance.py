@@ -129,8 +129,7 @@ def test_exclude_recent_tracks_is_per_user(clean_shown):
 
 def test_buffers_do_not_repeat_titles():
     plan = {"steps": [], "total_duration_min": 0, "total_cost_inr": 0}
-    consumed = orch._add_buffer_steps(plan, 120, max_buffers=3)
-    assert consumed == 120
+    orch._add_buffer_steps(plan, 120, max_buffers=3)
     orch._collapse_rest_buffers(plan)
     titles = [s["title"] for s in plan["steps"] if s["kind"] == "rest"]
     assert len(titles) == len(set(titles)), "buffer titles repeated"
@@ -141,31 +140,31 @@ def test_buffer_run_never_exceeds_rest_cap():
     orch._add_buffer_steps(plan, 200, max_buffers=6)
     plan = orch._collapse_rest_buffers(plan)
     for s in plan["steps"]:
-        assert s["duration_min"] <= orch._DUR_CAPS.get("rest", 45)
+        assert s["duration_min"] <= orch._DUR_CAPS.get("rest", 20)
 
 
 def test_collapsing_buffers_preserves_total_duration():
     # Merging must not silently discard the user's requested time.
     plan = {"steps": [], "total_duration_min": 0, "total_cost_inr": 0}
-    orch._add_buffer_steps(plan, 90, max_buffers=3)
+    orch._add_buffer_steps(plan, 40, max_buffers=2)
     before = sum(s["duration_min"] for s in plan["steps"])
     plan = orch._collapse_rest_buffers(plan)
     after = sum(s["duration_min"] for s in plan["steps"])
-    assert before == after == 90
-    assert plan["total_duration_min"] == 90
+    assert before == after == 40
+    assert plan["total_duration_min"] == 40
 
 
 def test_adjacent_short_buffers_merge():
     plan = {
         "steps": [
-            {"kind": "rest", "title": "A", "duration_min": 20, "cost_inr": 0},
-            {"kind": "rest", "title": "B", "duration_min": 20, "cost_inr": 0},
+            {"kind": "rest", "title": "A", "duration_min": 10, "cost_inr": 0},
+            {"kind": "rest", "title": "B", "duration_min": 10, "cost_inr": 0},
         ],
         "total_duration_min": 0, "total_cost_inr": 0,
     }
     plan = orch._collapse_rest_buffers(plan)
     assert len(plan["steps"]) == 1
-    assert plan["steps"][0]["duration_min"] == 40
+    assert plan["steps"][0]["duration_min"] == 20
 
 
 # ---------------------------------------------------------------- problem 4
@@ -524,15 +523,20 @@ def test_rest_collapsing_respects_flexible_caps():
         if s["kind"] in ("cafe", "food", "place", "restaurant"):
             assert s["duration_min"] <= 90
         if s["kind"] == "rest":
-            assert s["duration_min"] <= 45 + 200  # retained buffer is labelled
+            assert s["duration_min"] <= orch._DUR_CAPS.get("rest", 20)
 
 
 def test_rest_collapsing_keeps_plan_time_accounted():
-    before = sum(s["duration_min"] for s in _plan_with_n_rests(3)["steps"])
+    # R3: leftover time no longer has to be conserved into a rest buffer. A
+    # rest is capped, and the residual is accepted as an honest shortfall
+    # (surfaced via budget_notes) rather than padded into a fake block.
     plan = orch._limit_rest_filler(_plan_with_n_rests(3))
-    after = sum(s["duration_min"] for s in plan["steps"])
-    assert after == before, "time silently lost"
-    assert plan["total_duration_min"] == after
+    for s in plan["steps"]:
+        if s["kind"] == "rest":
+            assert s["duration_min"] <= orch._DUR_CAPS.get("rest", 20)
+    assert plan["total_duration_min"] == sum(
+        s["duration_min"] for s in plan["steps"]
+    )
 
 
 def test_rest_collapsing_noop_when_single_rest():

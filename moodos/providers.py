@@ -16,7 +16,7 @@ import httpx
 log = logging.getLogger("moodos.providers")
 
 TIMEOUT = 12.0
-HEADERS = {"User-Agent": "MoodOS/0.1 (student project; contact: local)"}
+HEADERS = {"User-Agent": "MoodOS/0.1 (student project; https://github.com/PS-Bhargav-Gajera/moodos)"}
 
 # Section 2 contract, Open-Meteo row: the forecast request gets its own bound
 # instead of borrowing TIMEOUT. Same value today, but deliberately NOT shared:
@@ -615,8 +615,9 @@ def nearby_restaurants(
     """
     parts = [f"cuisine:{cuisine}" if cuisine else "", f"diet:{dietary}" if dietary else ""]
     key = f"restaurants:{round(lat, 3)}:{round(lon, 3)}:{':'.join(parts)}:{radius_m}"
+    stale_key = key + ":stale"
     cached = ttl_cache.get(key)
-    if cached:
+    if cached is not None:
         return cached
 
     cuisine_filter = ""
@@ -643,10 +644,19 @@ def nearby_restaurants(
         # P1b: Overpass failed (timeout, 502/429, breaker) — try the live
         # fallback provider for the same category before giving up. Lazy
         # import: fallback_places imports this module at load time.
-        from moodos.fallback_places import fallback_places
-        fb = fallback_places(lat, lon, "restaurant", limit=limit)
+        from moodos.fallback_places import _dedupe_places, fallback_places
+        fb = _dedupe_places(fallback_places(lat, lon, "restaurant", limit=limit))
         if fb:
-            return fb[:limit]
+            result = fb[:limit]
+            ttl_cache.set(key, result, ttl_seconds=6 * 3600)
+            ttl_cache.set(stale_key, result, ttl_seconds=24 * 3600)
+            return result
+        # A4: nothing live succeeded. Fall back to the 24h stale copy of the
+        # last good result rather than an empty list.
+        stale = ttl_cache.get_raw(stale_key)
+        if stale:
+            log.warning("serving stale cache for %s", key)
+            return stale
         if strict:
             raise ProviderUnavailable(
                 "overpass",
@@ -658,8 +668,8 @@ def nearby_restaurants(
     try:
         for el in data.get("elements") or []:
             tags = el.get("tags") or {}
-            plat = el.get("lat") or (el.get("center") or {}).get("lat")
-            plon = el.get("lon") or (el.get("center") or {}).get("lon")
+            plat = el.get("lat") if el.get("lat") is not None else (el.get("center") or {}).get("lat")
+            plon = el.get("lon") if el.get("lon") is not None else (el.get("center") or {}).get("lon")
             if plat is None or plon is None:
                 continue
             name = tags.get("name") or tags.get("brand")
@@ -728,7 +738,8 @@ def nearby_restaurants(
             if len(restaurants) >= limit:
                 break
         if restaurants:
-            ttl_cache.set(key, restaurants, ttl_seconds=20 * 60)
+            ttl_cache.set(key, restaurants, ttl_seconds=6 * 3600)
+            ttl_cache.set(stale_key, restaurants, ttl_seconds=24 * 3600)
         return restaurants
     except Exception:
         return []

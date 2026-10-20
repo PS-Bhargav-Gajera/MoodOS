@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -275,6 +276,38 @@ def _foursquare_search(lat: float, lon: float, q: str, limit: int) -> list[dict[
     return out
 
 
+def _norm_name(name: str) -> str:
+    """Lowercase letters+digits only, so 'Pharma Canteen(F1)' == 'Pharma Canteen (F1)'."""
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+
+def _dedupe_places(places: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop duplicate POIs, keeping the first.
+
+    Two results are duplicates when their normalized names match AND they sit
+    within 100 m of each other, or when they carry the same source id (the
+    same OSM/Geoapify/Foursquare row returned twice).
+    """
+    kept: list[dict[str, Any]] = []
+    for p in places:
+        sid = str(p.get("source_id") or "")
+        pname = _norm_name(p.get("name") or p.get("title") or "")
+        dup = False
+        for k in kept:
+            if sid and sid == str(k.get("source_id") or ""):
+                dup = True
+                break
+            if pname and pname == _norm_name(k.get("name") or k.get("title") or ""):
+                d = haversine_km(p.get("lat") or 0, p.get("lon") or 0,
+                                 k.get("lat") or 0, k.get("lon") or 0)
+                if d <= 0.1:
+                    dup = True
+                    break
+        if not dup:
+            kept.append(p)
+    return kept
+
+
 def fallback_places(lat: float, lon: float, category: str, limit: int = 10) -> list[dict[str, Any]]:
     """Nearby POIs from Geoapify/Foursquare if keyed, else Nominatim.
 
@@ -301,5 +334,6 @@ def fallback_places(lat: float, lon: float, category: str, limit: int = 10) -> l
         return []
 
     places = [_to_place(r, spec, provider, lat, lon) for r in rows[:limit]]
+    places = _dedupe_places(places)
     places.sort(key=lambda p: (p.get("distance_km") or 999.0))
     return places[:limit]

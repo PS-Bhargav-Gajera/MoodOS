@@ -245,7 +245,9 @@ class LocationService:
         radius_m = max(800, min(int(radius_m or 4000), 20000))
         limit = max(1, min(int(limit or 24), 60))
         cats = _parse_categories(categories)
-        key = f"poi:{round(lat, 3)}:{round(lon, 3)}:{radius_m}:{','.join(cats)}:{limit}"
+        cat = ",".join(cats)
+        key = f"poi:{round(lat, 3)}:{round(lon, 3)}:{cat}:{radius_m}"
+        stale_key = key + ":stale"
         cached = ttl_cache.get(key)
         if cached is not None:
             return cached
@@ -255,12 +257,18 @@ class LocationService:
             # P1b: Overpass failed (timeout, 502/429, breaker) — try the live
             # fallback provider for the same categories before giving up.
             places = []
-            for cat in cats:
-                fb_cat = _FALLBACK_CATEGORY.get(cat)
+            for cat_name in cats:
+                fb_cat = _FALLBACK_CATEGORY.get(cat_name)
                 if fb_cat:
                     places.extend(fallback_places(lat, lon, fb_cat, limit=limit))
             places = [p for p in places if p.get("category") in cats]
             if not places:
+                # A4: nothing live succeeded. Fall back to the 24h stale copy
+                # of the last good result rather than an empty list.
+                stale = ttl_cache.get_raw(stale_key)
+                if stale:
+                    log.warning("serving stale cache for %s", key)
+                    return stale
                 if strict:
                     raise ProviderUnavailable(
                         "overpass",
@@ -271,7 +279,7 @@ class LocationService:
                 return []
         else:
             places = self._normalize_elements(elements, lat, lon, cats)
-            # Belt-and-braces: enforce the requested categories even if a mocked
+            # Belt-and-braces: enforce the requested categories even if the mocked
             # or misbehaving Overpass response returned more.
             places = [p for p in places if p.get("category") in cats]
         places = self._dedupe(places)
@@ -279,9 +287,11 @@ class LocationService:
         places = places[:limit]
         self._attach_route_times(places, lat, lon)
 
-        # Cache populated results long; cache empties briefly so a void area or
-        # a transient Overpass failure doesn't hammer the public API on retry.
-        ttl_cache.set(key, places, ttl_seconds=30 * 60 if places else 3 * 60)
+        # A4: the final result (Overpass or fallback) is cached for 6h, and a
+        # 24h stale copy is kept so a total outage still serves real venues.
+        ttl_cache.set(key, places, ttl_seconds=6 * 3600)
+        if places:
+            ttl_cache.set(stale_key, places, ttl_seconds=24 * 3600)
         return places
 
     def _overpass_elements(
