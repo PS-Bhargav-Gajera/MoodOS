@@ -5,7 +5,7 @@ tags: [moodos, data-source, storage, cache]
 # TTL Cache
 
 Short-lived dynamic cache persisted to `data/ttl_cache.json`
-(`moodos/cache.py`).
+(`settings.cache_path`, `config.py:62`; `moodos/cache.py`).
 
 ## Source
 
@@ -21,15 +21,18 @@ live facts** (file docstring) — it's for provider responses only.
 
 | Cache | Key | TTL |
 |---|---|---|
-| Weather | `weather:{lat}:{lon}` (default) | minutes |
-| Places / walks | `places:{lat}:{lon}:{q}`, `walks:...` | 20 min |
-| Cinemas | `cinemas:{lat}:{lon}` | 24 h |
-| Restaurants | `restaurants:{lat}:{lon}:{cuisine/dietary...}:{radius}` | ~1 h |
-| Music | `music:{query}|{country}|seed={seed}` | 6 h |
-| Books | `books:{query}` | 6 h |
-| TMDB search/metadata | `tmdb:...`, `tmdb-meta:...`, `tmdb-detail:...` | 6-24 h |
-| TMDB watch/trending/recs | `tmdb-watch:...` etc. | 6-12 h |
-| Web snippets | `web:{query}` | 2 h |
+| Weather | `weather:{lat}:{lon}` (rounded) | 15 min (`providers.py:55`) |
+| Reverse geocode | `rev:{lat}:{lon}` | 6 h (`providers.py:134`) |
+| Places (Overpass/Nominatim) | `places:{lat}:{lon}:{q}` | 20 min (`providers.py:160`) |
+| Walks | `walks:{lat}:{lon}`, `walkspot:...` | 30 min |
+| Nearby POIs / cinemas | `poi:{lat}:{lon}:{radius}:{cats}:{limit}` | 30 min, 3 min when empty (`location_service.py:247`) |
+| Restaurants | `restaurants:{lat}:{lon}:{cuisine/dietary...}:{radius}` | 20 min (`providers.py:643`) |
+| Music | `music:{query}\|{country}\|seed={seed}` | 20 min (`providers.py:854`) |
+| Books | `books:{query}` | 6 h (`providers.py:834`) |
+| TMDB search/discover/now-playing | `tmdb:...`, `tmdb-disc:...`, `tmdb-now:...` | 3-6 h |
+| TMDB details/metadata | `tmdb-detail:...`, `tmdb-meta:...` | 24 h |
+| TMDB watch/trending/recs | `tmdb-watch:...`, `tmdb-trending:...`, `tmdb-rec:...` | 6-12 h |
+| Web snippets | `web:{query}` | 2 h (`providers.py:1350`) |
 
 Because `seed` is part of the music key, **refreshing with a new seed bypasses
 the cache** and returns fresh songs (see [[Search Music]]).

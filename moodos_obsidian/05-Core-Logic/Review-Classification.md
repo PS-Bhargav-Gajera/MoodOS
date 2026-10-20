@@ -18,9 +18,11 @@ Keyword-rule sentiment/aspect classifier for movie/place candidates
 ## Pipeline use
 
 Applied to the top-4 ranked movie/place items after planning
-(`orchestrator.py:1386-1389`); surfaced in the bundle as `reviews` for the
-frontend cards. It's the `review` signal used by [[Ranking and Scoring]]
-(`review_quality`/`vote`), not a real NLP sentiment model.
+(`orchestrator.py:2327-2330`); surfaced in the bundle as `reviews` for the
+frontend cards. It is **not** the `review` score used by [[Ranking and
+Scoring]] — that signal is the candidate's own `review_quality`/`vote`
+(TMDB `vote_average`, `ranking.py:156`), and it is not a real NLP sentiment
+model.
 
 ## Connects to
 
@@ -28,5 +30,5 @@ frontend cards. It's the `review` signal used by [[Ranking and Scoring]]
 
 ## Used by
 
-- `run_pipeline` (`orchestrator.py:1386-1389`)
+- `run_pipeline` (`orchestrator.py:2327-2330`)
 - [[Frontend]]

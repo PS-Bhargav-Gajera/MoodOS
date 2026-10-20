@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Tmdb Movie Details
 
 MCP tool `tmdb_movie_details` → `lambda tmdb_id: providers.tmdb_movie_details(tmdb_id)`
-(`moodos/mcp_server.py:38`).
+(`moodos/mcp_server.py:41`).
 
 ## Signature
 
@@ -15,10 +15,10 @@ MCP tool `tmdb_movie_details` → `lambda tmdb_id: providers.tmdb_movie_details(
 
 Full TMDB movie detail (`/movie/{id}` with `credits`): runtime, genres,
 tagline, overview, top-5 cast, vote average, release date, poster
-(`providers.py:839`). Cached 24 h. No key → `{}`.
+(`providers.py:1072`). Cached 24 h. No key → `{}`.
 
 This is the real-runtime source used by [[Movie Metadata and Mood Fit]] via
-`_tmdb_runtime_min` (`providers.py:875`).
+`_tmdb_runtime_min` (`providers.py:1102`).
 
 ## Connects to
 

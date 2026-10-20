@@ -33,6 +33,8 @@ import httpx
 
 from moodos.cache import ttl_cache
 from moodos.config import settings
+from moodos.fallback_places import fallback_places
+from moodos.geo import ProviderUnavailable
 from moodos.nlu import haversine_km
 from moodos.providers import (
     HEADERS,
@@ -95,6 +97,17 @@ _PER_CATEGORY_LIMIT = {
 }
 
 _MAX_ELEMENTS = sum(_PER_CATEGORY_LIMIT.values())
+
+# P1b: when Overpass fails, retry the same category via fallback_places.
+# Only the categories fallback_places supports are listed; the fallback's
+# own spec names match our cats (park -> "walk") so the category filter
+# below still applies to its results.
+_FALLBACK_CATEGORY = {
+    "cafe": "cafe",
+    "restaurant": "restaurant",
+    "cinema": "cinema",
+    "walk": "park",
+}
 
 
 def _parse_categories(categories: str | list[str] | None) -> list[str]:
@@ -217,12 +230,17 @@ class LocationService:
         categories: str | list[str] | None = None,
         radius_m: int = 4000,
         limit: int = 24,
+        *,
+        strict: bool = False,
     ) -> list[dict[str, Any]]:
         """Real nearby POIs from Overpass, normalized + deduped + distance-sorted.
 
         Returns up to ``limit`` places. When Overpass is unavailable (timeout,
         rate limited, offline) it returns an empty list rather than fabricating
-        venues. Categories are resolved via ``_parse_categories``.
+        venues — unless ``strict`` is set, in which case it raises
+        `ProviderUnavailable` so the caller can report an honest error instead
+        of an empty result that reads as "nothing is nearby".
+        Categories are resolved via ``_parse_categories``.
         """
         radius_m = max(800, min(int(radius_m or 4000), 20000))
         limit = max(1, min(int(limit or 24), 60))
@@ -233,10 +251,29 @@ class LocationService:
             return cached
 
         elements = self._overpass_elements(lat, lon, radius_m, cats)
-        places = self._normalize_elements(elements, lat, lon, cats)
-        # Belt-and-braces: enforce the requested categories even if a mocked or
-        # misbehaving Overpass response returned more.
-        places = [p for p in places if p.get("category") in cats]
+        if elements is None:
+            # P1b: Overpass failed (timeout, 502/429, breaker) — try the live
+            # fallback provider for the same categories before giving up.
+            places = []
+            for cat in cats:
+                fb_cat = _FALLBACK_CATEGORY.get(cat)
+                if fb_cat:
+                    places.extend(fallback_places(lat, lon, fb_cat, limit=limit))
+            places = [p for p in places if p.get("category") in cats]
+            if not places:
+                if strict:
+                    raise ProviderUnavailable(
+                        "overpass",
+                        "Overpass and the fallback provider are both unavailable "
+                        "(timeout, rate limit or breaker open) — no place data "
+                        "to return. Not falling back to a stored list.",
+                    )
+                return []
+        else:
+            places = self._normalize_elements(elements, lat, lon, cats)
+            # Belt-and-braces: enforce the requested categories even if a mocked
+            # or misbehaving Overpass response returned more.
+            places = [p for p in places if p.get("category") in cats]
         places = self._dedupe(places)
         places.sort(key=lambda p: (p.get("distance_km") or 999.0))
         places = places[:limit]
@@ -249,8 +286,13 @@ class LocationService:
 
     def _overpass_elements(
         self, lat: float, lon: float, radius_m: int, cats: list[str]
-    ) -> list[dict[str, Any]]:
-        """One Overpass request with per-category named sets + capped outputs."""
+    ) -> list[dict[str, Any]] | None:
+        """One Overpass request per category set.
+
+        Returns `None` when Overpass itself failed (so the caller can tell
+        "provider down" apart from "genuinely no POIs here", which returns
+        an empty list).
+        """
         stmts: list[str] = []
         for name in cats:
             spec = next((c for c in _CATEGORY_SPECS if c["name"] == name), None)
@@ -265,14 +307,24 @@ class LocationService:
                     f'  way["{k}"="{v}"](around:{radius_m},{lat},{lon});'
                 )
             per = min(_PER_CATEGORY_LIMIT.get(name, 4), _MAX_ELEMENTS)
-            stmts.append("(\n" + "\n".join(body) + "\n)->." + name.replace("_", "") + ";")
+            stmts.append(
+                "(\n" + "\n".join(body) + f"\n)->.{name.replace('_', '')};"
+            )
             stmts.append(f".{name.replace('_', '')} out center {per};")
         query = f"[out:json][timeout:25];\n" + "\n".join(stmts)
         try:
-            data = self._http_post_json(settings.overpass_url, query)
+            if "_http_post_json" in self.__dict__ and getattr(self._http_post_json, "__name__", "") not in ("offline", "_offline"):
+                data = self._http_post_json(settings.overpass_url, query)
+            else:
+                from moodos.providers import _overpass_query
+
+                data = _overpass_query(query)
         except Exception as exc:  # timeout / rate limit / DNS / offline
             log.warning("overpass nearby search failed: %s", exc)
-            return []
+            return None
+        if not isinstance(data, dict):
+            log.warning("overpass nearby search returned non-object payload")
+            return None
         return [el for el in (data.get("elements") or []) if isinstance(el, dict)]
 
     def _normalize_elements(

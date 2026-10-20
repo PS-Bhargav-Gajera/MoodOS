@@ -104,7 +104,13 @@ async function health() {
 }
 
 function sourceName(src) {
-  return { gps: "live GPS", ip: "IP", user: "your input", default: "default" }[src] || src;
+  return {
+    gps: "live GPS",
+    ip: "IP",
+    user: "your input",
+    profile: "saved profile location",
+    default: "default",
+  }[src] || src;
 }
 
 let _publicIp = null;
@@ -129,13 +135,21 @@ async function resolveLocation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      setHere(`⚠ ${err.message || "Location required — type a place or allow GPS."}`);
+      return null;
+    }
     const res = await r.json();
     if (res && res.city) {
       const conf = Math.round(res.confidence * 100);
       const extra = [res.area, res.state].filter(Boolean).join(", ");
+      const amb = res.needs_confirmation && (res.candidates || []).length
+        ? ` — confirm: ${(res.candidates || []).map((c) => c.display_name).join(" | ")}`
+        : "";
+      const note = res.notice ? ` — ${res.notice}` : "";
       setHere(
-        `📍 ${extra ? extra + ", " : ""}${res.city} · via ${sourceName(res.source)} · ${conf}% sure`
+        `📍 ${extra ? extra + ", " : ""}${res.city} · via ${sourceName(res.source)} · ${conf}% sure${amb}${note}`
       );
     }
     return res;
@@ -577,7 +591,12 @@ function renderPlan(data) {
         const totalMin = totalSec ? Math.round(totalSec / 60) : 0;
         let extra = "";
         if (!prep.spotify_connected && prep.authorize_url) {
-          extra = `<p><a href="/spotify/login">Connect Spotify first</a></p>`;
+          // A bare "Connect Spotify first" is useless to someone who already
+          // connected — say why we're asking again when we know.
+          const why = prep.scope_gap && prep.scope_gap.length
+            ? " — your earlier connection was granted before playlist permission, so it has to be made again"
+            : "";
+          extra = `<p><a href="/spotify/login">Connect Spotify first</a>${why}</p>`;
         }
         $("book").innerHTML = `
           <p><strong>Prepared playlist</strong> · based on your ${data.slots?.desired_mood || data.slots?.current_mood || "mood"}
@@ -592,16 +611,35 @@ function renderPlan(data) {
           <button type="button" id="plistgo">I confirm creating this playlist</button>
         `;
         $("plrefresh").onclick = () => renderPlaylistPanel(seed + 1);
-        $("plistgo").onclick = async () => {
+        const confirmPlaylist = async () => {
           const done = await fetch("/api/playlist/confirm", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ query: q, confirmed: true }),
           }).then((r) => r.json());
-          $("book").innerHTML += `<p class="tiny">${done.status}${done.playlist_url ? " · " + done.playlist_url : ""}</p>`;
+          // Render the server's user-facing copy, never the internal status
+          // string — "create_failed" tells the user nothing they can act on.
+          // `error` covers a 500 from the global handler, `message` everything
+          // the playlist tool returns.
+          const msg = done.message || done.error
+            || "Something went wrong creating the playlist. Try again.";
+          let action = "";
+          if (done.action === "connect" || done.action === "reconnect") {
+            const label = done.action === "reconnect" ? "Reconnect" : "Connect";
+            action = ` <a href="/spotify/login">${label} Spotify</a>`;
+          } else if (done.playlist_url) {
+            action = ` <a href="${done.playlist_url}" target="_blank" rel="noopener">Open playlist</a>`;
+          }
+          $("book").innerHTML += `<p class="tiny">${msg}${action}</p>`;
           const btn = document.getElementById("plistgo");
-          if (btn) btn.disabled = true;
+          if (btn) {
+            // innerHTML += re-parses, so the handler is gone. Re-attach it
+            // unless the playlist actually exists and there is nothing to redo.
+            if (done.status === "executed") btn.disabled = true;
+            else btn.onclick = confirmPlaylist;
+          }
         };
+        $("plistgo").onclick = confirmPlaylist;
       })
       .catch(() => {
         $("book").innerHTML = `<p class="tiny">Couldn't load suggestions. Try again.</p>`;
@@ -637,36 +675,50 @@ $("go").onclick = async () => {
   $("status").classList.add("busy");
   $("go").disabled = true;
   $("result").classList.add("hidden");
-  const userLabel = ($("loc").value || "").trim();
-  if (!geo.lat && userLabel) {
-    // No GPS but a manual location was typed — use it instead of waiting on GPS.
-    geo.status = "user";
-  }
-  await requestGeo();
-  const locNote = geo.status === "live"
-    ? "Asking MoodOS…"
-    : (userLabel || geo.status === "user")
-      ? "Using your chosen location. Ask MoodOS…"
-      : "No location found — using a default area. Ask MoodOS…";
-  $("status").textContent = locNote + " (this can take ~30s)";
-  const body = {
-    message: $("msg").value,
-    prompt: $("prompt").value || null,
-    lat: geo.lat,
-    lon: geo.lon,
-    user_label: userLabel || null,
-    ip: await getPublicIp(),
-  };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+  // Everything the catch/finally below touches is declared up front so any
+  // failure — even one before the request is built — still lands in catch.
+  let timer = null;
+  let ticker = null;
   try {
+    const userLabel = ($("loc").value || "").trim();
+    if (!geo.lat && userLabel) {
+      // No GPS but a manual location was typed — use it instead of waiting on GPS.
+      geo.status = "user";
+    }
+    await requestGeo();
+    const locNote = geo.status === "live"
+      ? "Asking MoodOS…"
+      : (userLabel || geo.status === "user")
+        ? "Using your chosen location. Ask MoodOS…"
+        : "No location found — MoodOS will ask you for one. Ask MoodOS…";
+    const statusMsg = locNote +
+      " Planning your evening. This usually takes 40-90 seconds and can take up to 2 minutes.";
+    $("status").textContent = statusMsg;
+    const startedAt = Date.now();
+    ticker = setInterval(() => {
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      $("status").textContent = statusMsg + " · " + secs + "s";
+    }, 1000);
+    const body = {
+      message: $("msg").value,
+      prompt: $("prompt").value || null,
+      lat: geo.lat,
+      lon: geo.lon,
+      user_label: userLabel || null,
+      ip: await getPublicIp(),
+    };
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), 150000);
     const res = await fetch("/api/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error("Server error " + res.status);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || body.error || "Server error " + res.status);
+    }
     const data = await res.json();
     $("status").textContent = data.mode === "chat" ? "Direct answer" : "Experience plan ready.";
     render(data);
@@ -674,7 +726,7 @@ $("go").onclick = async () => {
     const timedOut = err.name === "AbortError";
     console.error(err);
     $("status").textContent = timedOut
-      ? "MoodOS took too long — timed out after 90s. Try again."
+      ? "MoodOS took too long — timed out after 150s. Try again."
       : "Something went wrong — the backend may be unreachable.";
     $("result").classList.remove("hidden");
     $("result").innerHTML = `
@@ -682,7 +734,7 @@ $("go").onclick = async () => {
         <div class="bundle-eyebrow">Could not build a plan</div>
         <div class="bundle-title">Oops</div>
         <div class="bundle-desc">${timedOut
-          ? "The request timed out (over 90s). Your network or a live API may be slow."
+          ? "The request timed out (over 150s). Your network or a live API may be slow."
           : "Couldn't get an answer. Check that the server is running and try again."}</div>
         <button class="btn-action btn-primary-action" type="button" id="retry">Try again</button>
       </div>
@@ -690,6 +742,7 @@ $("go").onclick = async () => {
     $("retry").onclick = () => $("go").click();
   } finally {
     clearTimeout(timer);
+    clearInterval(ticker);
     $("go").disabled = false;
     $("status").classList.remove("busy");
   }

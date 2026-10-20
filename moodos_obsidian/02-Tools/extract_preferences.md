@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Extract Preferences
 
 MCP tool `extract_preferences` → `MoodOSMCPServer.extract_preferences`
-(`moodos/mcp_server.py:75`).
+(`moodos/mcp_server.py:78`).
 
 ## Signature
 
@@ -18,7 +18,8 @@ Returns `implicit_preferences`, `budget_inr`, `duration_hours`, `social`,
 Same `extract_intent` source as [[Analyze Mood]]; projects only the
 preference-shaped slots (budget, time, social, intensity). The live pipeline
 builds an equivalent `prefs` dict directly from `slots`
-(`orchestrator.py:1214-1220`) rather than calling this tool.
+(`orchestrator.py:2093-2100`, which also carries `party_size`) rather than
+calling this tool.
 
 ## Connects to
 

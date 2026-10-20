@@ -181,3 +181,75 @@ def test_heuristic_missing_weather():
     plan = _heuristic_plan([], slots, {})
     assert "steps" in plan
     assert "explanation" in plan
+
+
+# ---------------------------------------------------------------------------
+# budget_fit.within_tolerance STALENESS
+# ---------------------------------------------------------------------------
+
+def test_attach_music_refreshes_within_tolerance_row6():
+    # Run 2 row 6: a 60-min window assembled at 60 min (within tolerance),
+    # then real track sums re-time the music leg so the plan reaches 110 min.
+    # The refreshed budget_fit must read False, not keep the stale True.
+    music = [
+        {"id": f"s{i}", "title": f"Track {i}", "kind": "music",
+         "duration_sec": 1350}
+        for i in range(4)
+    ]
+    plan = {
+        "steps": [
+            {"kind": "walk", "title": "walk", "duration_min": 20,
+             "cost_inr": 0, "flexible": False},
+            {"kind": "music", "title": "Entertainment mashup", "duration_min": 40,
+             "cost_inr": 0, "flexible": True},
+        ],
+        "total_duration_min": 60, "total_cost_inr": 0,
+        "requested_minutes": 60,
+        "budget_fit": {"requested_min": 60, "actual_min": 60, "delta_min": 0,
+                       "tolerance_min": 2, "within_tolerance": True,
+                       "fixed_unchanged": True},
+    }
+    _attach_music_tracks(plan, music)
+    assert plan["budget_fit"]["actual_min"] == 110   # walk 20 + 4 x 1350 s = 90 min
+    assert plan["budget_fit"]["delta_min"] == 50
+    assert plan["budget_fit"]["within_tolerance"] is False
+
+
+def test_within_tolerance_delta_3_window_60_false_on_both_paths():
+    # Exact tolerance for a 60-min window is 0.03 * 60 = 1.8 (+1 slack = 2.8),
+    # so delta 3 must read False at the assembly site AND after the
+    # _attach_music_tracks refresh (the rounded tolerance_min=2 would give
+    # 3 <= 3 = True, which is the wrong side of the boundary).
+    from moodos.orchestrator import _budget_fit
+
+    assembled = {
+        "steps": [{"kind": "cafe", "title": "Cafe One", "duration_min": 63,
+                   "cost_inr": 120, "flexible": True}],
+        "requested_minutes": 60,
+    }
+    fit = _budget_fit(assembled, 60, 0.03 * 60)     # assembly-site path
+    assert fit["actual_min"] == 63
+    assert fit["delta_min"] == 3
+    assert fit["within_tolerance"] is False
+
+    music = [
+        {"id": f"s{i}", "title": f"Track {i}", "kind": "music",
+         "duration_sec": 645}
+        for i in range(4)
+    ]
+    plan = {
+        "steps": [
+            {"kind": "walk", "title": "walk", "duration_min": 20,
+             "cost_inr": 0, "flexible": False},
+            {"kind": "music", "title": "Wind down", "duration_min": 40,
+             "cost_inr": 0, "flexible": True},
+        ],
+        "total_duration_min": 60, "total_cost_inr": 0,
+        "requested_minutes": 60,
+        "budget_fit": {"requested_min": 60, "actual_min": 60, "delta_min": 0,
+                       "tolerance_min": 2, "within_tolerance": True,
+                       "fixed_unchanged": True},
+    }
+    _attach_music_tracks(plan, music)               # refresh path: 20 + 43 = 63 min
+    assert plan["budget_fit"]["delta_min"] == 3
+    assert plan["budget_fit"]["within_tolerance"] is False

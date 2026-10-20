@@ -1,0 +1,23 @@
+INFO:     Started server process [3492]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+overpass nearby search failed: Client error '429 Too Many Requests' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass.kumi.systems/api/interpreter attempt 1 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 2)
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Mem0 update 99cf84bbb5bf4be4aea1146c6fdcfe4f -> 404
+Mem0 update faae47243be0438e884c1a1e4b57577a -> 404
+Mem0 update df26e6942c4841d2ae5273c68045ce26 -> 404

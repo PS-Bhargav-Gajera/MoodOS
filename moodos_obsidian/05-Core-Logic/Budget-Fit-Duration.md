@@ -8,43 +8,49 @@ Forcing the plan total to equal the requested time (±tolerance) by stretching
 or shrinking only **flexible** steps. Money is a separate soft cap (see
 [[Hard Filtering and Constraints]]).
 
-## Fixed vs flexible (`orchestrator.py:593-615`)
+## Fixed vs flexible (`orchestrator.py:857`, `:1105`)
 
-- `_FIXED_KINDS = {"movie", "streaming", "walk", "travel"}` (`:600`) — facts
+- `_FIXED_KINDS = {"movie", "streaming", "walk", "travel"}` (`:857`) — facts
   the loop may **never** rewrite (real movie runtime, travel time).
 - Everything else (restaurant/cafe dwell, place, music session, rest) is
-  flexible. `_tag_flexibility` stamps the flag `:611`.
+  flexible. `_tag_flexibility` stamps the flag (`:1105`, defaults from
+  `_kind_flexible`, `:1002`).
 
-## Budget-fit loop (`_assemble_plan`, `orchestrator.py:1014`)
+## Budget-fit loop (`_assemble_plan`, `orchestrator.py:1793`)
 
-`_duration()`/`_renumber()` helpers, then up to **12 passes**
-(`:1046`):
+`_duration()`/`_renumber()` helpers (`:1836-1841`), then up to **12 passes**
+(`:1843`); `tol = 0.03 * requested_min` (`:1810`).
 
-- **Under budget** (`diff < 0`): extend music up to a 180-min cap (a),
-  stretch the longest flexible main stop (b), prefer a *meaningful* filler via
-  `_best_filler` (`orchestrator.py:819`) that returns a wind-down music leg, a
-  short second activity, or only-as-last-resort a bare "rest" buffer (c), then
-  force-stretch the longest flexible step (d).
-- **Over budget** (`diff > 0`): never shrink fixed — shave the long flexible
-  stop down to a per-kind floor (`restaurant/cafe/food 40`, `place 20`,
-  `indoor 15`), or **drop** the lowest-priority physical stop when everything
-  left is fixed and still over, appending a plain-language `budget_notes`
-  entry (`:1123-1137`).
+- **Under budget** (`diff < 0`): extend music toward its `_DUR_CAPS` cap of
+  30 min (a, `:1851-1860`), stretch the longest flexible main stop (b, capped
+  by `_DUR_CAPS`, `:1861-1874`), prefer a *meaningful* filler via
+  `_best_filler` (`orchestrator.py:1414`) that returns a wind-down music leg, a
+  short second activity, or only-as-last-resort a bare "rest" buffer (c,
+  `:1875-1900`), then distribute the leftover across ALL flexible steps, each
+  up to its per-kind cap, and finally absorb any residual into capped pacing
+  buffers via `_add_buffer_steps` (d, `:1901-1920`).
+- **Over budget** (`diff > 0`): never shrink fixed — shave the longest
+  shavable physical stop down to a per-kind floor (`restaurant/cafe/food 40`,
+  `place 20`, `indoor 15`, `:1928-1938`), or **drop** the lowest-priority
+  physical stop when everything left is fixed and still over, appending a
+  plain-language `budget_notes` entry (`:1939-1953`).
 
-Post-loop force-fit (`:1144-1165`) handles leftovers; then `budget_fit` stats
-are computed and **the assert runs** (`orchestrator.py:1180`):
+Post-loop force-fit (`:1961-1982`) handles leftovers (shave a flexible step,
+or drop a fixed stop with a note); buffers are collapsed/limited
+(`:1956-1957`); then `budget_fit` stats are recorded (`:1989-1996`):
 
 ```python
-assert abs(dur - requested_min) <= tol + 1, f"budget fit failed: ..."
+plan["budget_fit"] = {
+    "requested_min": ..., "actual_min": ..., "delta_min": ...,
+    "tolerance_min": ..., "within_tolerance": abs(dur - requested_min) <= tol + 1,
+    "fixed_unchanged": True,
+}
 ```
 
-## Crash risk
-
-The assert has **no try/except anywhere up the call chain**. If duration can
-never converge in the tolerance window — e.g. a budget so large that step
-dropping empties the plan, or shaving floors that still overshoot — the
-`AssertionError` escapes `run_pipeline`, `/api/plan` returns 500, and the
-frontend shows only the generic "Oops" ([[Budget Fit Crash]]).
+**No assert runs.** If the loop never converged, `_assemble_plan` logs
+`budget fit incomplete ... returning best effort` (`:2010-2014`) and returns
+the plan anyway, so the request degrades instead of crashing (this used to be
+an `AssertionError` 500 — see the resolved [[Budget Fit Crash]]).
 
 ## Connects to
 
@@ -52,5 +58,5 @@ frontend shows only the generic "Oops" ([[Budget Fit Crash]]).
 
 ## Used by
 
-- `run_pipeline` (`orchestrator.py:1379`)
+- `run_pipeline` (`orchestrator.py:2028`), called at `:2319`
 - [[Request Flow]] · [[Route Plan]]

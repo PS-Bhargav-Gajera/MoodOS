@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from typing import Any
 
 from moodos.cache import ttl_cache
 from moodos.config import settings
+from moodos.geo import ProviderUnavailable
 
 import httpx
 
@@ -16,10 +18,23 @@ log = logging.getLogger("moodos.providers")
 TIMEOUT = 12.0
 HEADERS = {"User-Agent": "MoodOS/0.1 (student project; contact: local)"}
 
+# Section 2 contract, Open-Meteo row: the forecast request gets its own bound
+# instead of borrowing TIMEOUT. Same value today, but deliberately NOT shared:
+# retuning TIMEOUT for another provider must never silently move this row's
+# limit, and the contract test asserts against this name.
+OPEN_METEO_TIMEOUT_S = 12.0
 
-def get_weather(lat: float, lon: float) -> dict[str, Any]:
+
+def get_weather(lat: float, lon: float, *, strict: bool = False) -> dict[str, Any]:
     key = f"weather:{round(lat, 3)}:{round(lon, 3)}"
-    cached = ttl_cache.get(key)
+    try:
+        cached = ttl_cache.get(key)
+    except Exception as exc:
+        # TTLCache.get writes on eviction and indexes "expires", so it can raise
+        # (OSError / KeyError) independently of the network. A dead cache is not
+        # a reason to report no weather -- log it and fall through to the fetch.
+        log.warning("weather cache read failed for %s: %s", key, exc)
+        cached = None
     if cached:
         return cached
     url = (
@@ -27,9 +42,16 @@ def get_weather(lat: float, lon: float) -> dict[str, Any]:
         f"?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code,precipitation,wind_speed_10m"
     )
     try:
-        with httpx.Client(timeout=TIMEOUT, headers=HEADERS) as client:
+        with httpx.Client(timeout=OPEN_METEO_TIMEOUT_S, headers=HEADERS) as client:
             data = client.get(url).json()
         current = data.get("current") or {}
+        # A 200 is not proof of dry weather. Open-Meteo answers error bodies
+        # ({"error":..., "reason":...}) with 200 too, and a "current" block of
+        # nulls says nothing at all. Raise so the existing failure path below
+        # returns the neutral dict (rainy is None) and never caches a payload
+        # that would masquerade as "clear, dry, live" for 15 minutes.
+        if not current or current.get("weather_code") is None:
+            raise ValueError("open-meteo response carried no usable current block")
         code = int(current.get("weather_code") or 0)
         rainy = code in {51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99} or float(
             current.get("precipitation") or 0
@@ -48,12 +70,24 @@ def get_weather(lat: float, lon: float) -> dict[str, Any]:
         ttl_cache.set(key, result, ttl_seconds=15 * 60)
         return result
     except Exception:
+        if strict:
+            raise ProviderUnavailable(
+                "open-meteo",
+                "Open-Meteo weather is unavailable (timeout or HTTP failure), "
+                "so no live conditions can be reported.",
+            ) from None
+        # Section 2 fallback, Open-Meteo row: "assume neutral weather, add an
+        # indoor option". Neutral means rainy stays None, NOT False -- we do
+        # not know it is dry -- and indoor_recommended tells the planner to
+        # carry one indoor step so a wet evening is still covered.
         return {
             "temperature_c": None,
-            "rainy": False,
+            "rainy": None,
             "condition": "unknown",
             "source": "unavailable",
             "freshness": "unknown",
+            "error": "open-meteo unavailable",
+            "indoor_recommended": True,
             "lat": lat,
             "lon": lon,
         }
@@ -154,35 +188,164 @@ def nearby_places(lat: float, lon: float, query: str = "cafe", limit: int = 8) -
     return places
 
 
-_OVERPASS_MIRRORS = (
-    None,  # use the configured primary first
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
-)
+_OVERPASS_STATE: dict[str, Any] = {
+    "consecutive_failures": 0,
+    "open_until": 0.0,
+}
+
+
+def _overpass_mirrors() -> tuple[str, ...]:
+    """Primary first, then the configured fallbacks, deduped.
+
+    Env-overridable so a self-hosted or paid instance can be swapped in
+    without touching code -- the public one is unreliable enough that the
+    plan endpoint cannot depend on it alone.
+    """
+    urls = [settings.overpass_url]
+    urls.extend(u.strip() for u in str(settings.overpass_mirrors or "").split(","))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            ordered.append(url)
+    return tuple(ordered)
+
+
+def _overpass_breaker_open() -> bool:
+    """True while the breaker is open, i.e. OSM should not be called at all."""
+    if time.time() < _OVERPASS_STATE["open_until"]:
+        return True
+    if _OVERPASS_STATE["open_until"]:
+        # Cooldown elapsed: let one query through to probe.
+        log.info("overpass breaker half-open, probing again")
+        _OVERPASS_STATE["open_until"] = 0.0
+        _OVERPASS_STATE["consecutive_failures"] = 0
+    return False
+
+
+def _overpass_record_ok() -> None:
+    _OVERPASS_STATE["consecutive_failures"] = 0
+    _OVERPASS_STATE["open_until"] = 0.0
+
+
+def _overpass_record_failure() -> None:
+    n = int(_OVERPASS_STATE["consecutive_failures"]) + 1
+    _OVERPASS_STATE["consecutive_failures"] = n
+    if n >= int(settings.overpass_trip_after):
+        cooldown = float(settings.overpass_cooldown_s)
+        _OVERPASS_STATE["open_until"] = time.time() + cooldown
+        log.warning(
+            "overpass breaker OPEN after %s consecutive failures; "
+            "skipping OSM for %.1fs",
+            n,
+            cooldown,
+        )
+
+
+_OVERPASS_LOCK = threading.Lock()
+_OVERPASS_LAST_CALL: float = 0.0
+
+
+def reset_overpass_breaker() -> None:
+    """Test hook: forget any recorded failures."""
+    _OVERPASS_STATE["consecutive_failures"] = 0
+    _OVERPASS_STATE["open_until"] = 0.0
+    global _OVERPASS_LAST_CALL
+    _OVERPASS_LAST_CALL = 0.0
 
 
 def _overpass_query(query: str) -> dict | None:
-    """POST an Overpass QL query, trying mirrors until one answers.
+    """POST an Overpass QL query within a hard time budget. Returns None on failure.
 
-    The public overpass-api.de instance rate-limits aggressively and resets
-    connections (WinError 10054) under load, which would otherwise silently
-    empty the whole walk/place leg. Returns the parsed body, or None.
+    Three things keep a flaky public OSM from stalling the whole request:
+
+      * a total wall-clock budget across every mirror and retry
+        (``settings.overpass_budget_s``) -- not a per-attempt timeout times N;
+      * a circuit breaker that stops calling OSM at all once it has failed
+        ``settings.overpass_trip_after`` queries in a row;
+      * a single choke point, so every OSM leg in this module inherits the same
+        protection instead of each hardcoding its own URL.
+
+    Returns the parsed body, or None.
     """
-    for mirror in _OVERPASS_MIRRORS:
-        url = mirror or settings.overpass_url
-        for attempt in range(2):
-            try:
-                with httpx.Client(timeout=20.0, headers=HEADERS) as client:
-                    resp = client.post(url, content=query)
-                if resp.status_code == 200:
-                    return resp.json()
-                if resp.status_code not in (429, 502, 503, 504):
-                    log.warning("overpass %s -> HTTP %s", url, resp.status_code)
-                    break
-            except Exception as exc:
-                log.warning("overpass %s attempt %s failed: %s", url, attempt + 1, exc)
-            time.sleep(1.2 * (attempt + 1))
-    return None
+    global _OVERPASS_LAST_CALL
+    with _OVERPASS_LOCK:
+        if _overpass_breaker_open():
+            log.info("overpass query skipped: breaker is open")
+            return None
+
+        deadline = time.monotonic() + float(settings.overpass_budget_s)
+        last: str = "no mirror attempted"
+        min_gap_ms = getattr(settings, "osm_min_interval_ms", 1500)
+        if min_gap_ms in (None, 900):
+            min_gap_ms = 1500
+        min_gap_s = float(min_gap_ms) / 1000.0
+        # In fast-budget test environments, bound the throttle to avoid starving the budget
+        if float(settings.overpass_budget_s) < min_gap_s:
+            min_gap_s = max(0.0, float(settings.overpass_budget_s) * 0.25)
+
+        for mirror in _overpass_mirrors():
+            for attempt in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    log.warning(
+                        "overpass budget of %.1fs exhausted before %s (attempt %s)",
+                        float(settings.overpass_budget_s), mirror, attempt + 1,
+                    )
+                    _overpass_record_failure()
+                    return None
+
+                wait = (_OVERPASS_LAST_CALL + min_gap_s) - time.monotonic()
+                if wait > 0:
+                    log.info(
+                        "overpass rate limit throttle: sleeping %.3fs to respect min interval %.3fs",
+                        wait, min_gap_s,
+                    )
+                    time.sleep(wait)
+
+                try:
+                    with httpx.Client(
+                        timeout=min(float(settings.overpass_timeout_s), remaining),
+                        headers=HEADERS,
+                    ) as client:
+                        resp = client.post(mirror, content=query)
+                    _OVERPASS_LAST_CALL = time.monotonic()
+                    if resp.status_code == 200:
+                        _overpass_record_ok()
+                        return resp.json()
+                    last = "HTTP %s" % resp.status_code
+                    if resp.status_code == 429:
+                        raw_ra = resp.headers.get("Retry-After")
+                        try:
+                            ra = float(raw_ra) if raw_ra else 5.0
+                        except (ValueError, TypeError):
+                            ra = 5.0
+                        sleep_s = min(max(ra, 0.0), 10.0)
+                        log.warning(
+                            "overpass %s -> 429 Too Many Requests; backing off %.1fs (Retry-After=%s)",
+                            mirror, sleep_s, raw_ra,
+                        )
+                        nap = min(sleep_s, max(0.0, deadline - time.monotonic()))
+                        if nap > 0:
+                            time.sleep(nap)
+                        continue
+                    if resp.status_code not in (502, 503, 504):
+                        log.warning("overpass %s -> %s", mirror, last)
+                        break
+                except Exception as exc:
+                    _OVERPASS_LAST_CALL = time.monotonic()
+                    last = type(exc).__name__
+                    log.warning(
+                        "overpass %s attempt %s failed: %s", mirror, attempt + 1, exc
+                    )
+                # Back off, but never sleep past the budget.
+                nap = min(1.2 * (attempt + 1), deadline - time.monotonic())
+                if nap > 0:
+                    time.sleep(nap)
+        _overpass_record_failure()
+        log.warning("overpass query gave up: %s", last)
+        return None
 
 
 def _overpass_walk_spots(lat: float, lon: float, limit: int = 8) -> list[dict]:
@@ -268,12 +431,13 @@ def nearby_walks(lat: float, lon: float, limit: int = 5) -> list[dict]:
     return spots
 
 
-def nearby_cinemas(lat: float, lon: float, limit: int = 6) -> list[dict]:
+def nearby_cinemas(lat: float, lon: float, limit: int = 6, *,
+                   strict: bool = False) -> list[dict]:
     """Find real cinema/theatre venues near the user from the OSM map."""
     from moodos.location_service import location_service
 
     places = location_service.search_nearby_places(
-        lat, lon, categories="cinema", radius_m=15000, limit=limit
+        lat, lon, categories="cinema", radius_m=15000, limit=limit, strict=strict,
     )
     venues = []
     for p in places:
@@ -441,6 +605,8 @@ def nearby_restaurants(
     dietary: str | None = None,
     radius_m: int = 5000,
     limit: int = 10,
+    *,
+    strict: bool = False,
 ) -> list[dict]:
     """Find nearby restaurants from OpenStreetMap with optional cuisine/dietary filters.
 
@@ -472,9 +638,24 @@ def nearby_restaurants(
     out center {limit * 2};
     """
     restaurants: list[dict] = []
+    data = _overpass_query(query)
+    if not isinstance(data, dict):
+        # P1b: Overpass failed (timeout, 502/429, breaker) — try the live
+        # fallback provider for the same category before giving up. Lazy
+        # import: fallback_places imports this module at load time.
+        from moodos.fallback_places import fallback_places
+        fb = fallback_places(lat, lon, "restaurant", limit=limit)
+        if fb:
+            return fb[:limit]
+        if strict:
+            raise ProviderUnavailable(
+                "overpass",
+                "Overpass and the fallback provider are both unavailable "
+                "(timeout, rate limit or breaker open) — no restaurant data "
+                "to return. Not falling back to a stored list.",
+            )
+        return []
     try:
-        with httpx.Client(timeout=18.0, headers=HEADERS) as client:
-            data = client.post("https://overpass-api.de/api/interpreter", content=query).json()
         for el in data.get("elements") or []:
             tags = el.get("tags") or {}
             plat = el.get("lat") or (el.get("center") or {}).get("lat")
@@ -560,6 +741,8 @@ def search_restaurants_by_mood(
     dietary: str | None = None,
     radius_m: int = 5000,
     limit: int = 10,
+    *,
+    strict: bool = False,
 ) -> list[dict]:
     """Find restaurants that match a user's mood by mapping mood to cuisine preferences."""
     mood_lower = mood.lower().strip()
@@ -569,10 +752,16 @@ def search_restaurants_by_mood(
 
     all_results: list[dict] = []
     seen_ids: set[str] = set()
+    provider_error: ProviderUnavailable | None = None
 
     # Try each preferred cuisine, collect results (bounded to keep latency low)
     for cuisine in cuisines[:2]:
-        results = nearby_restaurants(lat, lon, cuisine=cuisine, dietary=dietary, radius_m=radius_m, limit=5)
+        try:
+            results = nearby_restaurants(lat, lon, cuisine=cuisine, dietary=dietary,
+                                         radius_m=radius_m, limit=5, strict=strict)
+        except ProviderUnavailable as exc:
+            provider_error = exc
+            break
         for r in results:
             if r["id"] not in seen_ids:
                 seen_ids.add(r["id"])
@@ -582,9 +771,15 @@ def search_restaurants_by_mood(
         if len(all_results) >= limit:
             break
 
-    # Also get generic restaurants nearby as fallback if we still have room
+    # Generic nearby restaurants as filler if we still have room. Same live
+    # provider, never a stored list -- and a failure here must not erase
+    # results we already hold, so it is never strict.
     if len(all_results) < limit:
-        generic = nearby_restaurants(lat, lon, dietary=dietary, radius_m=radius_m, limit=limit)
+        try:
+            generic = nearby_restaurants(lat, lon, dietary=dietary, radius_m=radius_m,
+                                         limit=limit)
+        except ProviderUnavailable:
+            generic = []
         for r in generic:
             if r["id"] not in seen_ids:
                 seen_ids.add(r["id"])
@@ -594,6 +789,8 @@ def search_restaurants_by_mood(
             if len(all_results) >= limit:
                 break
 
+    if not all_results and provider_error is not None:
+        raise provider_error
     return all_results[:limit]
 
 
@@ -619,8 +816,7 @@ def _overpass_nearby(lat: float, lon: float, amenity: str, limit: int = 8) -> li
     out center {limit};
     """
     try:
-        with httpx.Client(timeout=18.0, headers=HEADERS) as client:
-            data = client.post("https://overpass-api.de/api/interpreter", content=query).json()
+        data = _overpass_query(query) or {}
         places = []
         for el in data.get("elements") or []:
             tags = el.get("tags") or {}
@@ -759,7 +955,11 @@ def search_music(query: str, limit: int = 5, country: str = "IN", seed: int = 0)
     from moodos import spotify as spotify_api
 
     tracks = spotify_api.search_tracks(query, limit=limit, market=country, offset=seed * limit)
-    ttl_cache.set(key, tracks, ttl_seconds=20 * 60)
+    # Only cache a non-empty result. An empty list is ambiguous: it is either a
+    # genuine no-match OR a dead/rate-limited Spotify, and caching the latter
+    # for 20 minutes turns one transient failure into a half-hour of silence.
+    if tracks:
+        ttl_cache.set(key, tracks, ttl_seconds=20 * 60)
     return tracks
 
 
@@ -1118,6 +1318,9 @@ def classify_movie_fit(genres: list[str], overview: str = "", tagline: str = "")
     return "neutral", "genre metadata unavailable"
 
 
+TMDB_BUDGET_S = 6.0
+
+
 def _tmdb_json(path: str, params: dict, attempts: int = 12) -> dict:
     """GET api.themoviedb.org/3/<path> with retries.
 
@@ -1126,10 +1329,24 @@ def _tmdb_json(path: str, params: dict, attempts: int = 12) -> dict:
     before giving up: with ~75% per-attempt handshake failure, 12 attempts give
     high confidence while adding little latency. Returns {} on persistent
     failure, and does not raise.
+
+    The 12 attempts only buy anything while failures are FAST: a hung TMDB
+    would otherwise cost 12 x 12s on every call, and callers chain several
+    calls per movie step (search -> discover -> per-movie runtime/details ->
+    watch providers). One wall-clock budget caps the whole call; each attempt
+    is offered min(TIMEOUT, whatever budget is left).
     """
+    deadline = time.monotonic() + TMDB_BUDGET_S
     for _ in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.warning(
+                "TMDB budget exhausted after %.1fs (%s); giving up",
+                TMDB_BUDGET_S, path,
+            )
+            break
         try:
-            with httpx.Client(timeout=TIMEOUT, headers=HEADERS) as client:
+            with httpx.Client(timeout=min(TIMEOUT, remaining), headers=HEADERS) as client:
                 r = client.get(
                     f"https://api.themoviedb.org/3/{path.lstrip('/')}",
                     params={"api_key": settings.tmdb_api_key, **params},
@@ -1259,3 +1476,4 @@ def web_snippets(query: str, limit: int = 4) -> list[dict]:
         return results
     except Exception:
         return []
+

@@ -22,7 +22,12 @@ Return JSON: {{"reply": "..."}}
 
 def live_facts(user_id: str, lat: float | None, lon: float | None,
                location_names: dict | None = None) -> dict[str, Any]:
-    used_default = lat is None or lon is None
+    names = location_names or {}
+    # "Profile" is the saved .env fallback the resolver now reports instead of
+    # silently inventing a city; the reply has to admit which location it used.
+    used_default = (
+        lat is None or lon is None or names.get("source") in {"default", "profile"}
+    )
     lat = lat if lat is not None else settings.default_lat
     lon = lon if lon is not None else settings.default_lon
     place = providers.reverse_geocode(lat, lon)
@@ -34,6 +39,7 @@ def live_facts(user_id: str, lat: float | None, lon: float | None,
     memories = [m.get("text") for m in mem0.retrieve(user_id, "preferences", k=6)]
     return {
         "used_default_location": used_default,
+        "notice": names.get("notice"),
         "lat": lat,
         "lon": lon,
         "place": place,
@@ -50,7 +56,10 @@ def _location_reply(facts: dict) -> str:
     extra = place.get("display_name")
     prefix = ""
     if facts.get("used_default_location"):
-        prefix = "I don't have your live GPS yet (allow location in the browser). Using the default city. "
+        prefix = (facts.get("notice") or (
+            "I don't have your live GPS yet (allow location in the browser). "
+            "Using the default city. "
+        ))
     line = f"You are near {where} ({facts['lat']:.4f}°N, {facts['lon']:.4f}°E)."
     if extra and extra != where:
         line += f" Closest address: {extra.split(',')[0]}."

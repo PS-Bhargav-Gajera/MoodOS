@@ -37,13 +37,28 @@ class Settings(BaseSettings):
     # Public OSM-family endpoints. All env-overridable so a self-hosted
     # Overpass/OSRM/Nominatim can be pointed to without code changes.
     overpass_url: str = "https://overpass-api.de/api/interpreter"
+    # Comma-separated fallbacks, tried after overpass_url. The public instance
+    # rate-limits hard and 504s under load, so point this at a self-hosted or
+    # paid instance for reliability.
+    overpass_mirrors: str = (
+        "https://overpass.kumi.systems/api/interpreter,"
+        "https://overpass.private.coffee/api/interpreter"
+    )
+    # Per-HTTP-attempt timeout, and the total wall clock one Overpass query may
+    # consume across every mirror and retry. The budget is what stops a flaky
+    # public OSM from stalling a whole /api/plan request.
+    overpass_timeout_s: float = 8.0
+    overpass_budget_s: float = 8.0
+    # Consecutive whole-query failures before the breaker opens, and how long
+    # it stays open before we try OSM again.
+    overpass_trip_after: int = 3
+    overpass_cooldown_s: float = 120.0
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     osrm_url: str = "https://router.project-osrm.org"
     # Minimum gap between public OSM API hits (ms) to keep rate limits happy.
     osm_min_interval_ms: int = 900
 
     sqlite_path: Path = DATA_DIR / "moodos.db"
-    chroma_dir: Path = DATA_DIR / "vectors"
     cache_path: Path = DATA_DIR / "ttl_cache.json"
 
 

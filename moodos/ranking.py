@@ -23,6 +23,18 @@ WEIGHTS = {
     "food": 0.20,
 }
 
+
+def party_size(slots: dict) -> int:
+    """Headcount for the outing (1 for solo). budget_inr is the GROUP total,
+    while estimated_cost on candidates is per-person — cost checks multiply
+    the per-person estimate by this number so "Rs5000 for 5 friends" spends
+    the whole group budget instead of fitting one person's costs into it."""
+    try:
+        n = int(float((slots or {}).get("party_size") or 1))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(n, 50))
+
 # Conceptual only — not frozen forever; can be learned from ranking logs later.
 
 
@@ -83,7 +95,7 @@ def hard_filter(item: dict, slots: dict, weather: dict, remaining_budget: float,
     title = (item.get("title") or "").strip()
     if not title or _PLACEHOLDER_RE.match(title):
         return False  # unnamed / placeholder venue — no real place data
-    cost = float(item.get("estimated_cost") or 0)
+    cost = float(item.get("estimated_cost") or 0) * party_size(slots)
     dur = float(item.get("duration_min") or 0)
     if cost > remaining_budget:
         return False
@@ -122,7 +134,7 @@ def _food_emphasis(item: dict, slots: dict) -> float:
     if not is_food:
         return 0.0
     budget = float(slots.get("budget_inr") or 1000)
-    cost = float(item.get("estimated_cost") or 0)
+    cost = float(item.get("estimated_cost") or 0) * party_size(slots)
     tier = str(item.get("price_tier") or "budget")
     substantial = subtype == "restaurant" or tier in {"mid", "premium"}
     if substantial and budget >= 800 and cost > 0 and cost <= budget:

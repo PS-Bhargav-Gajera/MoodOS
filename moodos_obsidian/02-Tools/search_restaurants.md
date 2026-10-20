@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Search Restaurants
 
 MCP tool `search_restaurants` → `MoodOSMCPServer.search_restaurants`
-(`moodos/mcp_server.py:115`).
+(`moodos/mcp_server.py:134`).
 
 ## Signature
 
@@ -19,9 +19,9 @@ MCP tool `search_restaurants` → `MoodOSMCPServer.search_restaurants`
 - Both travel through Overpass/Nominatim ([[OpenStreetMap]]) and are cached.
 
 This is the provider behind both the main plan (mood path via
-`orchestrator.py:1266-1273`) **and** the "Find restaurants" follow-up button
-(`GET /api/restaurants`, [[Route Restaurants]]). The two call sites are subtly
-different — see [[Find Restaurants button path]].
+`orchestrator.py:2174-2181`) **and** the "Find restaurants" follow-up button
+(`GET /api/restaurants`, `app.py:439-461`, [[Route Restaurants]]). The two call
+sites are subtly different — see [[Find Restaurants button path]].
 
 ## Connects to
 
@@ -30,6 +30,6 @@ different — see [[Find Restaurants button path]].
 
 ## Used by
 
-- `run_pipeline._restaurants` (`orchestrator.py:1266`)
-- `GET /api/restaurants` (`app.py:189`)
+- `run_pipeline._restaurants` (`orchestrator.py:2176`)
+- `GET /api/restaurants` (`app.py:451`)
 - Public MCP surface

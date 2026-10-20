@@ -20,6 +20,14 @@ EXTRACT_SYSTEM = (
 )
 
 
+# Hard per-request HTTP timeout for every LLM call. The planner gives the LLM
+# 35s (see orchestrator._plan_with_budget) and then abandons the thread on a
+# timeout; without these bounds Groq would retry for ~180s per leg and Gemini
+# has NO default HTTP timeout at all, so abandoned threads could burn quota
+# for minutes after the request already returned.
+LLM_TIMEOUT_S = 25.0
+
+
 class LLMRouter:
     def __init__(self) -> None:
         self._groq = None
@@ -28,14 +36,21 @@ class LLMRouter:
             try:
                 from groq import Groq
 
-                self._groq = Groq(api_key=settings.groq_api_key)
+                self._groq = Groq(
+                    api_key=settings.groq_api_key,
+                    timeout=LLM_TIMEOUT_S,
+                    max_retries=0,
+                )
             except Exception as exc:
                 log.warning("Groq init failed: %s", exc)
         if settings.gemini_api_key:
             try:
                 from google import genai
 
-                self._gemini = genai.Client(api_key=settings.gemini_api_key)
+                self._gemini = genai.Client(
+                    api_key=settings.gemini_api_key,
+                    http_options={"timeout": int(LLM_TIMEOUT_S * 1000)},
+                )
             except Exception as exc:
                 log.warning("Gemini init failed: %s", exc)
 

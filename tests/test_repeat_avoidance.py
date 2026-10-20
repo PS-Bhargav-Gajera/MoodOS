@@ -316,14 +316,31 @@ def test_suggest_movies_tool_is_registered():
     assert callable(mcp.tools["suggest_movies"])
 
 
-def test_suggest_movies_routes_home_and_out(clean_shown):
+def test_suggest_movies_routes_home_and_out(clean_shown, monkeypatch):
+    """home=True must take the streaming search path, home=False the plain one.
+
+    Stubs the TMDB layer: conftest blocks real HTTP, and without the stubs the
+    routing under test would be masked by the network fallback returning [].
+    """
     from moodos import mcp_server as m
+    from moodos import providers as p
+
+    searches: list[bool] = []
+
+    def fake_search(query, limit=8, watch_at_home=False, language=None, **kw):
+        searches.append(watch_at_home)
+        return [{"id": 1, "tmdb_id": 1, "title": "A"}]
+
+    monkeypatch.setattr(p, "search_movies_tmdb", fake_search)
+    monkeypatch.setattr(p, "tmdb_trending", lambda *a, **k: [])
+    monkeypatch.setattr(p, "tmdb_watch_providers", lambda *a, **k: {})
 
     srv = m.mcp
     out = srv.suggest_movies("heartwarming film", limit=3, watch_at_home=False)
     assert isinstance(out, list)
     home = srv.suggest_movies("heartwarming film", limit=3, watch_at_home=True)
     assert isinstance(home, list)
+    assert searches == [False, True]
 
 
 def test_one_failed_source_does_not_break_the_plan(monkeypatch):

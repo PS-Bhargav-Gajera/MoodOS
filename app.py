@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import traceback
+import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -12,7 +15,9 @@ from moodos import actions
 from moodos import journal
 from moodos import spotify as spotify_api
 from moodos.config import settings
+from moodos.crisis import crisis_reply, is_crisis
 from moodos.db import get_event, get_mood_entry, init_db, save_feedback
+from moodos.geo import LocationError, ProviderUnavailable
 from moodos.location import resolve_location
 from moodos.llm import router
 from moodos.memory import mem0
@@ -24,28 +29,74 @@ STATIC = ROOT / "static"
 
 log = logging.getLogger("moodos.app")
 
-app = FastAPI(title="MoodOS", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="MoodOS", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
-import traceback
-from fastapi.responses import JSONResponse
+# Everything a user gets to see when something blows up. The detail that
+# actually helps goes to the log, keyed by the same error id we're about to
+# hand back, so a bug report can be traced to one line.
+GENERIC_ERROR_MESSAGE = (
+    "Something went wrong on our side. We've logged the details — please try again."
+)
+
+
+def _error_id() -> str:
+    return uuid.uuid4().hex[:8]
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    error_id = _error_id()
     log.error(
-        "Unhandled exception on %s: %s\n%s",
+        "Unhandled exception [id=%s] on %s: %s\n%s",
+        error_id,
         request.url,
         exc,
         traceback.format_exc(),
     )
+    # No str(exc) and no exception class name here: both leak internals (DB
+    # drivers, hostnames, file paths) to any API consumer.
     return JSONResponse(
         status_code=500,
         content={
-            "error": str(exc),
-            "type": type(exc).__name__,
+            "error": GENERIC_ERROR_MESSAGE,
+            "code": "internal_error",
+            "error_id": error_id,
             "plan": None,
-            "explanation": "Server error — check logs for details.",
+            "explanation": GENERIC_ERROR_MESSAGE,
         },
+    )
+
+
+@app.exception_handler(LocationError)
+async def location_error_handler(request: Request, exc: LocationError):
+    """A missing/impossible location is the caller's to fix, not a 500.
+
+    428 Precondition Required = "give us a location"; 400 = the coordinates or
+    the typed place were invalid. Either way the real reason is returned.
+    """
+    log.warning("location rejected on %s: %s", request.url, exc)
+    status = 428 if exc.code == "location_required" else 400
+    return JSONResponse(
+        status_code=status,
+        content={**exc.as_dict(), "plan": None, "explanation": exc.message},
+    )
+
+
+@app.exception_handler(ProviderUnavailable)
+async def provider_error_handler(request: Request, exc: ProviderUnavailable):
+    """A dead provider is reported honestly instead of as an empty success."""
+    log.warning("provider unavailable on %s: %s", request.url, exc)
+    return JSONResponse(
+        status_code=503,
+        content={**exc.as_dict(), "explanation": exc.message},
     )
 
 
@@ -99,11 +150,6 @@ class JournalReactRequest(BaseModel):
     reaction: str
 
 
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-
-
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
@@ -126,17 +172,37 @@ def health() -> dict:
 def plan(req: PlanRequest, request: Request, background: BackgroundTasks) -> dict:
     if not req.message.strip():
         raise HTTPException(400, "message required")
+    # Crisis check BEFORE resolve_location: a person in crisis must never get
+    # a location error (409/428) or wait on a geocode lookup. One shared
+    # helper (moodos.crisis) — no copy-pasted phrase lists.
+    if is_crisis(req.message):
+        return crisis_reply()
     ip = req.ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     ip = None if ip in {"127.0.0.1", "::1", "localhost"} or not ip else ip
-    resolved = resolve_location(req.lat, req.lon, req.user_label, ip, accuracy_m=req.accuracy_m)
+    # A typed place in THIS request outranks the GPS fix, so it must reach the
+    # shared resolver as the typed label — not just as a display string.
+    typed = (req.user_label or "").strip() or (req.city or "").strip()
+    resolved = resolve_location(req.lat, req.lon, typed or None, ip, accuracy_m=req.accuracy_m)
+    if resolved.get("needs_confirmation"):
+        # Ambiguous typed name: hand back the full resolved addresses so the
+        # user can confirm, instead of silently planning around one of them.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "location_ambiguous",
+                "message": resolved.get("notice"),
+                "candidates": resolved.get("candidates") or [],
+                "query": typed,
+                "explanation": resolved.get("notice"),
+            },
+        )
     location_names = {}
-    city_input = (req.city or "").strip()
-    if city_input:
+    if typed:
         location_names = {
-            "city": city_input,
-            "area": city_input,
-            "label": city_input,
-            "source": "user-input",
+            "city": resolved.get("city") or typed,
+            "area": resolved.get("area") or typed,
+            "label": typed,
+            "source": "user",
         }
     bundle = handle_message(
         req.message.strip(),
@@ -156,6 +222,7 @@ def plan(req: PlanRequest, request: Request, background: BackgroundTasks) -> dic
             "city": resolved["city"],
             "area": resolved["area"],
             "state": resolved["state"],
+            "notice": resolved.get("notice"),
         }
         # Fire-and-forget AFTER the response is built, so a slow/failed Mem0
         # call can never delay or break the plan the user is waiting on.
@@ -293,8 +360,9 @@ async def delete_all_memories(user_id: str = "demo"):
             "message": "All memories cleared."
         }
     except Exception as exc:
-        log.error("delete all memories failed: %s", exc)
-        return {"success": False, "error": str(exc)}
+        error_id = _error_id()
+        log.error("delete all memories failed [id=%s]: %s", error_id, exc, exc_info=True)
+        return {"success": False, "error": GENERIC_ERROR_MESSAGE, "error_id": error_id}
 
 
 @app.post("/api/booking/prepare")
@@ -315,13 +383,27 @@ def spotify_login():
     return RedirectResponse(spotify_api.authorize_url())
 
 
+# Spotify's own error codes (access_denied, invalid_state, ...) are meant for
+# logs. They reach the browser as HTTPException detail, so map them to prose.
+_SPOTIFY_AUTH_ERRORS = {
+    "access_denied": "You declined the Spotify connection. Nothing was changed.",
+    "invalid_state": "That Spotify sign-in link has expired. Start again from the app.",
+    "exchange_failed": "Spotify rejected the sign-in. Start again from the app.",
+    "exchange_error": "Couldn't reach Spotify to finish signing in. Try again.",
+}
+_SPOTIFY_AUTH_FALLBACK = "Couldn't finish connecting Spotify. Try again from the app."
+
+
 @app.get("/spotify/callback")
 def spotify_callback(code: str = "", state: str = "", error: str = ""):
     if error:
-        raise HTTPException(400, error)
+        log.info("spotify oauth declined by user: %s", error)
+        raise HTTPException(400, _SPOTIFY_AUTH_ERRORS.get(error, _SPOTIFY_AUTH_FALLBACK))
     result = spotify_api.exchange_code(code, state)
     if not result.get("ok"):
-        raise HTTPException(400, result.get("error") or "spotify_auth_failed")
+        raw = result.get("error") or "spotify_auth_failed"
+        log.warning("spotify auth callback failed: %s", raw)
+        raise HTTPException(400, _SPOTIFY_AUTH_ERRORS.get(raw, _SPOTIFY_AUTH_FALLBACK))
     return RedirectResponse("/")
 
 
@@ -338,6 +420,39 @@ def playlist_confirm(body: PlaylistConfirm) -> dict:
 @app.get("/api/prompts")
 def prompts() -> dict:
     return {"prompts": mcp.prompts, "tools": list(mcp.tools)}
+
+
+# --- MCP tool discovery ---------------------------------------------------
+# There is no MCP SDK in this project: MoodOSMCPServer is an in-process
+# registry with no transport. These endpoints publish the registry in the
+# shape an MCP client (or MCP Inspector's "HTTP transport" tab) expects, so
+# the schema can be inspected and validated without a live server handshake.
+# They are read-only listings; `mcp.call` remains the only dispatch path.
+
+@app.get("/mcp/tools")
+def mcp_tools() -> dict:
+    """MCP `tools/list` result: every tool with a derived inputSchema."""
+    return {"tools": mcp.list_tools()}
+
+
+@app.get("/mcp/resources")
+def mcp_resources() -> dict:
+    """MCP `resources/list` result."""
+    return {"resources": mcp.list_resources()}
+
+
+@app.get("/mcp/prompts")
+def mcp_prompts() -> dict:
+    """MCP `prompts/list` result."""
+    return {"prompts": mcp.list_prompts()}
+
+
+@app.get("/mcp/tools/{name}")
+def mcp_tool_schema(name: str) -> dict:
+    """Schema for one tool, or 404 if it is not registered."""
+    if name not in mcp.tools:
+        raise HTTPException(404, f"Unknown MCP tool: {name}")
+    return mcp.tool_schema(name)
 
 
 @app.get("/api/journal")
@@ -406,22 +521,36 @@ def journal_clear(user_id: str = "demo") -> dict:
 def restaurants(
     lat: float | None = None,
     lon: float | None = None,
+    city: str | None = None,
     cuisine: str | None = None,
     mood: str | None = None,
     dietary: str | None = None,
     radius: int = 5000,
     limit: int = 10,
 ) -> dict:
-    lat = lat if lat is not None else settings.default_lat
-    lon = lon if lon is not None else settings.default_lon
+    # Same shared resolver as /api/plan: typed city > GPS > IP > profile,
+    # with an honest 428 instead of silently searching Ahmedabad.
+    resolved = resolve_location(lat, lon, (city or "").strip() or None, None)
     results = mcp.call(
         "search_restaurants",
-        lat=lat,
-        lon=lon,
+        lat=resolved["lat"],
+        lon=resolved["lon"],
         cuisine=cuisine,
         mood=mood,
         dietary=dietary,
         radius_m=radius,
         limit=limit,
     )
-    return {"restaurants": results, "count": len(results), "lat": lat, "lon": lon}
+    return {
+        "restaurants": results,
+        "count": len(results),
+        "lat": resolved["lat"],
+        "lon": resolved["lon"],
+        "location": {
+            "source": resolved["source"],
+            "label": resolved["label"],
+            "city": resolved.get("city"),
+            "confidence": resolved["confidence"],
+        },
+        "notice": resolved.get("notice"),
+    }

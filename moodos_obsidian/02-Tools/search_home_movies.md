@@ -5,23 +5,23 @@ tags: [moodos, tool, mcp]
 # Search Home Movies
 
 MCP tool `search_home_movies` → `MoodOSMCPServer.search_home_movies`
-(`moodos/mcp_server.py:93`).
+(`moodos/mcp_server.py:111`).
 
 ## Signature
 
-`search_home_movies(query: str, limit: int = 8) -> list`
+`search_home_movies(query: str, limit: int = 8, language: str | None = None) -> list`
 
 ## Behavior
 
-- `providers.search_movies_tmdb(query=..., limit=limit, watch_at_home=True)`
-  ([[TMDB]], `providers.py:789`).
+- `providers.search_movies_tmdb(query=..., limit=limit, watch_at_home=True,
+  language=language)` ([[TMDB]], `providers.py:979`).
 - If fewer than 4 results, appends **trending** movies
-  (`tmdb_trending`, `providers.py:1019`) not already present.
+  (`tmdb_trending`, `providers.py:1268`) not already present.
 - Enriches the top 4 with streaming availability via
-  `tmdb_watch_providers` ([[TMDB]], `providers.py:985`): attaches `streaming`
+  `tmdb_watch_providers` ([[TMDB]], `providers.py:1238`): attaches `streaming`
   (flatrate or rent, first 3) and `watch_link`.
 
-Used for **stay-home** plans only (`run_pipeline._movies`, `orchestrator.py:1261-1263`);
+Used for **stay-home** plans only (`run_pipeline._movies`, `orchestrator.py:2163-2169`);
 their plan steps carry `kind: streaming` ([[Home vs Out Mode]]).
 
 ## Connects to
@@ -30,5 +30,5 @@ their plan steps carry `kind: streaming` ([[Home vs Out Mode]]).
 
 ## Used by
 
-- `run_pipeline._movies` stay-home branch (`orchestrator.py:1261`)
+- `run_pipeline._movies` stay-home branch (`orchestrator.py:2167`)
 - Public MCP surface

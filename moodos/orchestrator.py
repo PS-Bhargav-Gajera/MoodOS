@@ -17,7 +17,7 @@ from moodos.memory import mem0
 import moodos.nlu as nlu
 from moodos.nlu import extract_intent, haversine_km
 from moodos.rag import knowledge
-from moodos.ranking import hard_filter, rerank, score_item
+from moodos.ranking import hard_filter, party_size, rerank, score_item
 
 log = logging.getLogger("moodos.orchestrator")
 
@@ -432,7 +432,11 @@ Rules:
   Never invent place names.
 - You MUST spend at least 60% of budget_inr across the steps.
   With ₹1200 budget, total cost_inr across steps must be >= ₹720.
-  Include a movie step (cost ~₹220) if duration_hours >= 3
+- budget_inr is the TOTAL for the whole group. Candidate estimated_cost is
+  per-person: every cost_inr you write must be the group total
+  (per-person price x party_size). "Rs5000 for 5 friends" means the steps
+  together may spend up to ₹5000, each step's cost being 5x the ticket price.
+  Include a movie step (cost ~₹220 x party_size) if duration_hours >= 3
   and stay_home is false.
 - Prefer quiet/low intensity if intensity is low.
 - If stay_home is true, use kind=streaming not movie.
@@ -498,8 +502,13 @@ def handle_message(
     location_names: dict | None = None,
 ) -> dict[str, Any]:
     from moodos.chat import answer_chat
+    from moodos.crisis import crisis_reply, is_crisis
     from moodos.nlu import classify_turn
 
+    # Same shared guard as the /api/plan route (defense-in-depth for direct
+    # callers): crisis never reaches the chat LLM leg or run_pipeline.
+    if is_crisis(message):
+        return crisis_reply()
     turn = classify_turn(message)
     if turn["mode"] == "chat":
         return answer_chat(message, user_id, lat, lon, location_names)
@@ -664,6 +673,7 @@ def _pick_dining(ranked: list[dict], slots: dict) -> tuple[dict | None, dict | N
 
 def _heuristic_plan(ranked: list[dict], slots: dict, weather: dict) -> dict[str, Any]:
     budget = float(slots.get("budget_inr") or 1000)
+    party = party_size(slots)
     hours = float(slots.get("duration_hours") or 4)
     rainy = bool(weather.get("rainy"))
     stay_home = bool(slots.get("stay_home"))
@@ -744,8 +754,8 @@ def _heuristic_plan(ranked: list[dict], slots: dict, weather: dict) -> dict[str,
             )
             dur += 15
         if restaurant:
-            est = int(restaurant.get("estimated_cost") or 350)
-            cap = budget if slots.get("food_priority") else 500
+            est = int(restaurant.get("estimated_cost") or 350) * party
+            cap = budget if slots.get("food_priority") else 500 * party
             rcost = min(cap, est)
             cuisine_note = f" ({restaurant.get('cuisine')})" if restaurant.get("cuisine") else ""
             food_why = f"Nearby restaurant matching your mood{cuisine_note}."
@@ -770,7 +780,7 @@ def _heuristic_plan(ranked: list[dict], slots: dict, weather: dict) -> dict[str,
             cost += rcost
             dur += int(restaurant.get("duration_min") or 60)
         elif cafe:
-            food_cost = min(300, int(cafe.get("estimated_cost") or 250))
+            food_cost = min(300, int(cafe.get("estimated_cost") or 250)) * party
             steps.append(
                 {
                     "order": len(steps) + 1,
@@ -788,7 +798,7 @@ def _heuristic_plan(ranked: list[dict], slots: dict, weather: dict) -> dict[str,
             cost += food_cost
             dur += 45
         if movie:
-            mcost = int(movie.get("estimated_cost") or 220)
+            mcost = int(movie.get("estimated_cost") or 220) * party
             is_est = bool(movie.get("is_estimate"))
             info = " (est.)" if is_est else ""
             steps.append(
@@ -977,7 +987,7 @@ def _diversify_consecutive_stops(
                 "kind": _swap_step_kind(cand),
                 "title": cand.get("title"),
                 "duration_min": orig_dur,
-                "cost_inr": min(orig_cost, int(cand.get("estimated_cost") or 0)),
+                "cost_inr": min(orig_cost, int(cand.get("estimated_cost") or 0) * party_size(slots)),
                 "flexible": True,
                 "price_is_estimate": bool(cand.get("price_is_estimate")),
                 "price_tier": cand.get("price_tier"),
@@ -1124,7 +1134,7 @@ def _ensure_explicit_movie(plan: dict, movie_pool: list[dict], slots: dict) -> d
         "kind": "movie",
         "title": pick.get("title") or "A movie",
         "duration_min": int(pick.get("duration_min") or 130),
-        "cost_inr": int(pick.get("estimated_cost") or 220),
+        "cost_inr": int(pick.get("estimated_cost") or 220) * party_size(slots),
         "flexible": False,
         "runtime_source": pick.get("runtime_source") or "estimate",
         "is_estimate": bool(pick.get("is_estimate")),
@@ -1402,8 +1412,9 @@ def _attach_music_tracks(plan: dict, music: list[dict]) -> None:
                 plan["total_duration_min"] = int(
                     sum(int(x.get("duration_min") or 0) for x in plan["steps"])
                 )
-        plan["budget_fit"]["actual_min"] = plan["total_duration_min"]
-        plan["budget_fit"]["delta_min"] = plan["total_duration_min"] - requested
+        plan["budget_fit"].update(
+            _budget_fit(plan, requested, _BUDGET_TOL_FRACTION * requested)
+        )
 
 
 def _best_filler(plan: dict, ranked: list[dict], shortfall: int, slots: dict | None = None) -> tuple[dict | None, bool]:
@@ -1472,7 +1483,7 @@ def _best_filler(plan: dict, ranked: list[dict], shortfall: int, slots: dict | N
                 "kind": "place" if ckind == "place" else "cafe",
                 "title": cand.get("title"),
                 "duration_min": min(shortfall, 30),
-                "cost_inr": int(cand.get("estimated_cost") or 0),
+                "cost_inr": int(cand.get("estimated_cost") or 0) * party_size(slots),
                 "flexible": True,
                 "why": why,
                 "lat": cand.get("lat"),
@@ -1785,6 +1796,26 @@ def _remove_llm_travel_steps(plan: dict) -> dict:
     return plan
 
 
+_BUDGET_TOL_FRACTION = 0.03
+
+
+def _budget_fit(plan: dict, requested_min: float, tol: float) -> dict[str, Any]:
+    """actual_min / delta_min / within_tolerance for the plan's current steps.
+
+    ``tol`` must be the EXACT (unrounded) tolerance in minutes - 0.03 of the
+    requested window - because rounding first flips the answer at the boundary:
+    on a 60 min window delta 3 is 3 <= 2.8 (False), but against the rounded
+    tolerance_min of 2 it would be 3 <= 3 (True).
+    """
+    dur = sum(int(s.get("duration_min") or 0) for s in plan.get("steps") or [])
+    delta = dur - requested_min
+    return {
+        "actual_min": int(dur),
+        "delta_min": int(delta),
+        "within_tolerance": abs(delta) <= tol + 1,
+    }
+
+
 def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon: float,
                    cinema_items: list[dict] | None = None,
                    weather: dict | None = None) -> dict:
@@ -1802,7 +1833,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     requested_min = float((slots.get("duration_hours") or 4)) * 60
     if requested_min <= 0 or not plan.get("steps"):
         return plan
-    tol = 0.03 * requested_min
+    tol = _BUDGET_TOL_FRACTION * requested_min
     notes: list[str] = []
 
     # Ensure every step (incl. LLM-produced ones) carries a fixed/flexible flag,
@@ -1834,6 +1865,34 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     def _renumber():
         for n, s in enumerate(plan["steps"]):
             s["order"] = n + 1
+
+    # Section 2 fallback, Open-Meteo row: no live weather means neutral
+    # conditions (rainy is None) AND one indoor option must still be in the
+    # plan, so a wet evening needs no rebuild. Inserted before the budget loop
+    # so it is fitted like any other step (flexible, so it can be shaved).
+    # Not added when the planner already emitted an indoor step (the rainy
+    # branch of _heuristic_plan) or when the whole plan is indoors anyway.
+    weather = weather or {}
+    if (
+        weather.get("rainy") is None
+        and not slots.get("stay_home")
+        and not any(s.get("kind") == "indoor" for s in plan["steps"])
+    ):
+        plan["steps"].append(
+            {
+                "order": len(plan["steps"]) + 1,
+                "kind": "indoor",
+                "title": "Covered indoor option (weather unavailable)",
+                "duration_min": 45,
+                "cost_inr": 0,
+                "flexible": True,
+                "why": (
+                    "Live weather could not be fetched, so this keeps a doable "
+                    "indoor plan B in the timeline instead of guessing about rain."
+                ),
+            }
+        )
+        _renumber()
 
     for _ in range(12):
         diff = _duration() - requested_min
@@ -1981,12 +2040,13 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     dur = sum(int(s.get("duration_min") or 0) for s in plan["steps"])
     cost = sum(int(s.get("cost_inr") or 0) for s in plan["steps"])
     plan["requested_minutes"] = int(requested_min)
+    fit = _budget_fit(plan, requested_min, tol)
     plan["budget_fit"] = {
         "requested_min": int(requested_min),
-        "actual_min": dur,
-        "delta_min": int(dur - requested_min),
+        "actual_min": fit["actual_min"],
+        "delta_min": fit["delta_min"],
         "tolerance_min": int(round(tol)),
-        "within_tolerance": abs(dur - requested_min) <= tol + 1,
+        "within_tolerance": fit["within_tolerance"],
         "fixed_unchanged": True,
     }
     b = slots.get("budget_inr")
@@ -1994,6 +2054,7 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     budget: float = float(b or 0)
     plan["budget"] = {
         "budget_inr": int(budget) if has_budget else None,
+        "party_size": party_size(slots),
         "total_cost_inr": cost,
         "over_budget": bool(has_budget and cost > budget),
         "excess_inr": int(max(0, cost - budget)) if has_budget else 0,
@@ -2009,6 +2070,27 @@ def _assemble_plan(plan: dict, ranked: list[dict], slots: dict, lat: float, lon:
     return plan
 
 
+def _live_source(name: str, label: str, failed: set[str]) -> str:
+    """Provenance line for a live lookup — must admit failure.
+
+    Claiming "Overpass/OSM (live)" for a batch that actually raised is the
+    same honesty bug `_weather_usage_source` exists to prevent.
+    """
+    if name in failed:
+        return "unavailable (provider error, no data returned)"
+    return label
+
+
+def _weather_usage_source(weather: dict) -> str:
+    """Provenance line for the tool_usage panel — must agree with the actual
+    fetch result. Claiming "Open-Meteo (live)" when get_weather returned the
+    unavailable dict violates the honesty rule (the plan silently degrades to
+    not-rainy while the panel claims live data)."""
+    if isinstance(weather, dict) and weather.get("source") == "open-meteo":
+        return "Open-Meteo (live)"
+    return "unavailable (no live weather)"
+
+
 def run_pipeline(
     message: str,
     user_id: str = "demo",
@@ -2021,7 +2103,7 @@ def run_pipeline(
     resolved_meta = location_names if isinstance(location_names, dict) else {}
     lat = lat if lat is not None else settings.default_lat
     lon = lon if lon is not None else settings.default_lon
-    used_default_location = resolved_meta.get("source") == "default" or (
+    used_default_location = resolved_meta.get("source") in {"default", "profile"} or (
         not resolved_meta and lat == settings.default_lat and lon == settings.default_lon
         and not resolved_meta.get("gps_live")
     )
@@ -2077,6 +2159,7 @@ def run_pipeline(
     prefs = {
         "implicit_preferences": slots.get("implicit_preferences"),
         "budget_inr": slots.get("budget_inr"),
+        "party_size": slots.get("party_size"),
         "duration_hours": slots.get("duration_hours"),
         "social": slots.get("social"),
         "intensity": slots.get("intensity"),
@@ -2109,7 +2192,27 @@ def run_pipeline(
     decisions.append({"diamond": "Is RAG retrieval confidence sufficient?", "answer": rag_ok, "confidence": rag_conf})
     retrieval_path.append("rag")
 
-    weather = mcp.call("get_weather", lat=lat, lon=lon)
+    # Weather is fetched here rather than in the parallel batch: it gates the
+    # music seed rotation, and that rotated query is what the "music" task
+    # searches with, so weather must be resolved before the batch is submitted.
+    # A dead Open-Meteo is reported, never invented: rainy stays unknown.
+    provider_errors: list[str] = []
+    failed_tools: set[str] = set()
+    try:
+        weather = mcp.call("get_weather", lat=lat, lon=lon)
+    except Exception as exc:
+        log.warning("get_weather failed: %s", exc)
+        provider_errors.append(f"get_weather: {exc}")
+        failed_tools.add("weather")
+        weather = {
+            "temperature_c": None,
+            "rainy": None,
+            "condition": "unknown",
+            "source": "unavailable",
+            "freshness": "unknown",
+            "lat": lat,
+            "lon": lon,
+        }
     decisions.append({"diamond": "Is live API data required?", "answer": True})
     retrieval_path.append("live-api")
 
@@ -2166,10 +2269,10 @@ def run_pipeline(
         return mcp.call("find_nearby_cinemas", lat=lat, lon=lon)
 
     tasks = {
-        "weather": lambda: mcp.call("get_weather", lat=lat, lon=lon),
         "places": lambda: mcp.call("find_nearby_places", lat=lat, lon=lon, q=None),
-        "music": lambda: mcp.call("search_music", q=music_q, country=slots.get("music_region") or "IN", limit=24),
-        "books": lambda: mcp.call("search_books", q="comfort quiet contemporary"),
+        "music": lambda: mcp.call("search_music", query=music_q,
+                                  country=slots.get("music_region") or "IN", limit=24),
+        "books": lambda: mcp.call("search_books", query="comfort quiet contemporary"),
         "movies": _movies,
         "restaurants": _restaurants,
         "cinemas": _cinemas,
@@ -2178,7 +2281,7 @@ def run_pipeline(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     results: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=7) as ex:
+    with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
         futures = {ex.submit(fn): name for name, fn in tasks.items()}
         for fut in as_completed(futures):
             name = futures[fut]
@@ -2186,9 +2289,10 @@ def run_pipeline(
                 results[name] = fut.result()
             except Exception as exc:  # never let one lookup fail the whole plan
                 log.warning("parallel lookup %s failed: %s", name, exc)
+                provider_errors.append(f"{name}: {exc}")
+                failed_tools.add(name)
                 results[name] = []
 
-    weather = results["weather"]
     places = results["places"]
     music = _exclude_recent_tracks(results["music"], user_id)
     books = results["books"]
@@ -2204,21 +2308,30 @@ def run_pipeline(
 
     if not rag_ok:
         retrieval_path.append("adaptive-fallback")
-        snippets = mcp.call(
-            "search_web_knowledge",
-            q=f"{slots.get('city') or settings.default_city} quiet cafe relaxing evening",
-        )
-        for snip in snippets[:3]:
-            knowledge.ingest(
-                {
-                    "id": snip.get("id"),
-                    "title": snip.get("title"),
-                    "kind": "web",
-                    "text": snip.get("text"),
-                    "source": "web-acquisition",
-                }
+        # The web fallback is optional enrichment: it must never be the one
+        # thing that takes the whole plan down. Failure here is recorded like
+        # any other provider failure and the pipeline keeps going with the
+        # (thin) RAG hits it already has.
+        try:
+            snippets = mcp.call(
+                "search_web_knowledge",
+                query=f"{slots.get('city') or settings.default_city} quiet cafe relaxing evening",
             )
-        rag_hits, rag_conf = knowledge.retrieve(rag_query, k=10)
+            for snip in (snippets or [])[:3]:
+                knowledge.ingest(
+                    {
+                        "id": snip.get("id"),
+                        "title": snip.get("title"),
+                        "kind": "web",
+                        "text": snip.get("text"),
+                        "source": "web-acquisition",
+                    }
+                )
+            rag_hits, rag_conf = knowledge.retrieve(rag_query, k=10)
+        except Exception as exc:
+            log.warning("adaptive web fallback failed: %s", exc)
+            provider_errors.append(f"search_web_knowledge: {exc}")
+            failed_tools.add("knowledge")
 
     seed_walk = {
         "id": "walk:local-street",
@@ -2334,18 +2447,35 @@ def run_pipeline(
         "stay_home": stay_home,
         "music_query": music_q,
         "tool_usage": {
-            "weather": {"tool": "get_weather", "source": "Open-Meteo (live)"},
-            "places": {"tool": "find_nearby_places", "source": "Overpass/OSM (live, around your location)"},
-            "restaurants": {"tool": "search_restaurants" + (" (by mood)" if restaurant_mood else ""), "source": "Overpass/OSM (live)"},
-            "cinemas": {"tool": "find_nearby_cinemas", "source": "Overpass/OSM (live)"},
+            "weather": {
+                "tool": "get_weather",
+                "source": _weather_usage_source(weather),
+            },
+            "places": {
+                "tool": "find_nearby_places",
+                "source": _live_source(
+                    "places", "Overpass/OSM (live, around your location)", failed_tools
+                ),
+            },
+            "restaurants": {
+                "tool": "search_restaurants" + (" (by mood)" if restaurant_mood else ""),
+                "source": _live_source("restaurants", "Overpass/OSM (live)", failed_tools),
+            },
+            "cinemas": {
+                "tool": "find_nearby_cinemas",
+                "source": _live_source("cinemas", "Overpass/OSM (live)", failed_tools),
+            },
             "movies": {"tool": "search_home_movies" if stay_home else "search_movies", "source": ("TMDB movie titles on real map cinemas; runtime from TMDB when available, runtime/showtime marked 'estimate' otherwise" if not stay_home else "streaming search")},
-            "music": {"tool": "search_music", "source": "Spotify (live, no fallback)"},
-            "books": {"tool": "search_books", "source": "book search"},
-            "knowledge": {"tool": "retrieve_knowledge" if rag_ok else "search_web_knowledge", "source": "RAG / web knowledge"},
+            "music": {"tool": "search_music",
+                      "source": _live_source("music", "Spotify (live, no fallback)", failed_tools)},
+            "books": {"tool": "search_books", "source": _live_source("books", "book search", failed_tools)},
+            "knowledge": {"tool": "retrieve_knowledge" if rag_ok else "search_web_knowledge",
+                          "source": _live_source("knowledge", "RAG / web knowledge", failed_tools)},
             "memory": {"tool": "get_user_profile", "source": "Mem0"},
         },
         "decisions": decisions,
         "retrieval_path": retrieval_path,
+        "provider_errors": provider_errors,
         "agents": {
             "extract": slots.get("_agent"),
             "extract_model": slots.get("_model"),

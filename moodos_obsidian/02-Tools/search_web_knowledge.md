@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Search Web Knowledge
 
 MCP tool `search_web_knowledge` → `lambda q: providers.web_snippets(q)`
-(`moodos/mcp_server.py:31`).
+(`moodos/mcp_server.py:34`).
 
 ## Signature
 
@@ -13,13 +13,13 @@ MCP tool `search_web_knowledge` → `lambda q: providers.web_snippets(q)`
 
 ## Behavior
 
-`providers.web_snippets` (`providers.py:1090`) — DuckDuckGo text search via the
+`providers.web_snippets` (`providers.py:1329`) — DuckDuckGo text search via the
 `ddgs` package ([[DuckDuckGo]]). Cached 2 h.
 
 Used by the **adaptive fallback**: when RAG confidence < 0.12, the pipeline
 searches the web for the city + "quiet cafe relaxing evening", ingests the top-3
 snippets into the knowledge store, and retries retrieval
-(`orchestrator.py:1313-1326`, [[Fallbacks and Degradation]]).
+(`orchestrator.py:2223-2239`, [[Fallbacks and Degradation]]).
 
 ## Connects to
 
@@ -27,5 +27,5 @@ snippets into the knowledge store, and retries retrieval
 
 ## Used by
 
-- `run_pipeline` adaptive fallback (`orchestrator.py:1315`)
+- `run_pipeline` adaptive fallback (`orchestrator.py:2225`)
 - Public MCP surface

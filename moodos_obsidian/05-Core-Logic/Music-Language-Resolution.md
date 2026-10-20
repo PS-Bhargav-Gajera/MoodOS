@@ -20,17 +20,20 @@ app infers one from where they are.
 - `infer_locale_language(city, state)` (`nlu.py:129`) — state map first
   (`STATE_LANGUAGE`, `nlu.py:77`), then city map (`CITY_LANGUAGE`, `nlu.py:96`).
 
-## Pipeline usage (`orchestrator.py:1244-1252`)
+## Pipeline usage (`orchestrator.py:2138-2155`)
 
-Explicit slot wins; otherwise infer from the reverse-geocoded location, then
-set `music_language` and `music_region` (country code, default `IN`). The
-language is passed into:
+Priority: explicit user mention (`slots.music_language`) → stored preference
+(`preferences.music_language`, from a past happy reaction) →
+`infer_locale_language` on the reverse-geocoded city/state. The winner is
+written back to `slots["music_language"]`, with `slots["music_language_explicit"]`
+flagging whether the user actually said it, and `slots["music_region"]`
+(country code, default `IN`) set for the search market. The language is
+passed into:
 
-- `_derive_search_query` music queries (`nlu.py` term used inside
-  [[Derive Search Query]]);
-- playlist/`why` blurbs (`_music_why`, `orchestrator.py:793`);
-- music filler titles (`_best_filler`, `orchestrator.py:840-843`);
-- iTunes/Spotify search country ([[Search Music]]).
+- `_derive_search_query` music queries ([[Derive Search Query]]);
+- playlist/`why` blurbs (`_music_why`, `orchestrator.py:1305`);
+- music filler titles (`_best_filler`, `orchestrator.py:1431-1438`);
+- the Spotify search market ([[Search Music]], `orchestrator.py:2190`).
 
 ## Connects to
 

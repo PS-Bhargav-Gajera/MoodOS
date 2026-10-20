@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Tmdb Recommendations
 
 MCP tool `tmdb_recommendations` → `lambda tmdb_id, limit=6: providers.tmdb_recommendations(tmdb_id, limit)`
-(`moodos/mcp_server.py:41`).
+(`moodos/mcp_server.py:44`).
 
 ## Signature
 
@@ -13,7 +13,7 @@ MCP tool `tmdb_recommendations` → `lambda tmdb_id, limit=6: providers.tmdb_rec
 
 ## Behavior
 
-`/movie/{id}/recommendations` — "more like this" (`providers.py:1055`).
+`/movie/{id}/recommendations` — "more like this" (`providers.py:1299`).
 Returns `kind: movie`, `watch_at_home: True`, `subtype: streaming`, default
 runtime 130 min. Cached 12 h. No key → `[]`.
 

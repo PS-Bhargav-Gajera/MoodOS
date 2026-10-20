@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Confirm Movie Booking
 
 MCP tool `confirm_movie_booking` → `actions.confirm_movie_booking`
-(`moodos/mcp_server.py:34`).
+(`moodos/mcp_server.py:37`).
 
 ## Signature
 
@@ -13,13 +13,16 @@ MCP tool `confirm_movie_booking` → `actions.confirm_movie_booking`
 
 ## Behavior
 
-`actions.confirm_movie_booking` (`actions.py:100`): if `confirmed` is falsy →
+`actions.confirm_movie_booking` (`actions.py:74`): if `confirmed` is falsy →
 `{status: aborted, executed: false}`. Otherwise returns
-`{status: executed_mock, provider: "CinemaBookingProvider.MockProvider", show,
-confirmation_code: "MOODOS-MOCK-4821"}`.
+`{status: recorded, executed: true, provider: "MoodOS (no live ticketing —
+confirm at the cinema)", show, confirmation_code: "MOODOS-HHMMSS"}` — the code
+is the current clock time, `f"MOODOS-{datetime.now().strftime('%H%M%S')}"`
+(`actions.py:82`).
 
-The booking is a **mock** — no real ticket is created. The route layer picks the
-show from `list_showtimes()[show_index % 2]` (`app.py:141`).
+The booking is a **mock** — no ticketing API, no payment, no PVR deep link.
+The route layer picks the show from `list_showtimes()[show_index % 2]`
+(`app.py:327`) and passes it through as `show`.
 
 ## Connects to
 
@@ -27,5 +30,5 @@ show from `list_showtimes()[show_index % 2]` (`app.py:141`).
 
 ## Used by
 
-- [[Route Booking Confirm]] (`POST /api/booking/confirm`)
+- [[Route Booking Confirm]] (`POST /api/booking/confirm`, `app.py:325-328`)
 - Public MCP surface

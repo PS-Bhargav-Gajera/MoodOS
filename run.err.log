@@ -1,0 +1,255 @@
+INFO:     Started server process [14036]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass nearby search failed: Client error '429 Too Many Requests' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+Gemini gemini-2.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass nearby search failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+overpass query gave up: HTTP 500
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Gemini gemini-2.5-flash-lite failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+LLM plan exceeded budget; using heuristic plan
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Gemini gemini-3.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Gemini gemini-3.1-flash-lite failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Gemini gemini-flash-latest failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Gemini gemini-2.0-flash failed: 404 NOT_FOUND. {'error': {'code': 404, 'message': 'This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).', 'status': 'NOT_FOUND'}}
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass nearby search failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 77ac332ebfda4df58b88ba50b216f7c6 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass nearby search failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+Gemini gemini-2.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 77ac332ebfda4df58b88ba50b216f7c6 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass nearby search failed: Client error '429 Too Many Requests' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Gemini gemini-2.5-flash-lite failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+LLM plan exceeded budget; using heuristic plan
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Gemini gemini-3.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass.kumi.systems/api/interpreter attempt 1 failed: _ssl.c:1015: The handshake operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 2)
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass budget of 12.0s exhausted before https://overpass.private.coffee/api/interpreter (attempt 1)
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update d55e652efa954f078cee58a7e849a5b0 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update c58532b13bbf43ddb558b8f78439f288 -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+overpass query gave up: HTTP 500
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update d4a6ba0d5c0842b387954e3c2d0b5cf5 -> 404
+Mem0 update 8c6eb50e9a5a4603bbc43a7d39dabf67 -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update a754e4b57a04445fb33851692071f111 -> 404
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass nearby search failed: Server error '502 Bad Gateway' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass https://overpass.private.coffee/api/interpreter -> HTTP 500
+overpass query gave up: HTTP 500
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass.kumi.systems/api/interpreter -> HTTP 500
+overpass budget of 12.0s exhausted before https://overpass.private.coffee/api/interpreter (attempt 1)
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'The request timed out. Please try again.', 'status': 'DEADLINE_EXCEEDED'}}
+Mem0 update 4daaa4164ffb47898b6f1468055eb1ef -> 404
+parallel lookup music failed: MoodOSMCPServer.search_music() got an unexpected keyword argument 'q'
+parallel lookup books failed: MoodOSMCPServer.search_books() got an unexpected keyword argument 'q'
+overpass nearby search failed: Client error '429 Too Many Requests' for url 'https://overpass-api.de/api/interpreter'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+parallel lookup cinemas failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+overpass https://overpass-api.de/api/interpreter attempt 1 failed: The read operation timed out
+overpass https://overpass-api.de/api/interpreter attempt 2 failed: The read operation timed out
+overpass budget of 12.0s exhausted before https://overpass.kumi.systems/api/interpreter (attempt 1)
+overpass breaker OPEN after 3 consecutive failures; skipping OSM for 120.0s
+parallel lookup restaurants failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) - no restaurant data to return. Not falling back to a stored list.
+overpass nearby search failed: The read operation timed out
+parallel lookup places failed: OpenStreetMap Overpass is unavailable (timeout, rate limit or breaker open) — no place data to return. Not falling back to a stored list.
+Gemini gemini-2.5-flash failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Gemini gemini-2.5-flash-lite failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Mem0 update a5aae97532914b5db695f0d267bb18c6 -> 404
+Mem0 update 462be73cf5fd49a3b5c6603cac556913 -> 404

@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Tmdb Watch Providers
 
 MCP tool `tmdb_watch_providers` → `lambda tmdb_id, region="IN": providers.tmdb_watch_providers(tmdb_id, region)`
-(`moodos/mcp_server.py:39`).
+(`moodos/mcp_server.py:42`).
 
 ## Signature
 
@@ -15,8 +15,9 @@ MCP tool `tmdb_watch_providers` → `lambda tmdb_id, region="IN": providers.tmdb
 
 `/movie/{id}/watch/providers` (region-aware): returns `flatrate`, `rent`, `buy`
 listings + a `link` for OTT availability in the given region
-(`providers.py:985`). Cached 12 h. Default region is `IN`
-(Indian streamers like Prime/Netflix/Hotstar appear in `flatrate`).
+(`providers.py:1238`). Cached 12 h (only when the region has data). Default
+region is `IN` (Indian streamers like Prime/Netflix/Hotstar appear in
+`flatrate`).
 
 Used by [[Search Home Movies]] to build the "watch at home" cards.
 
@@ -26,5 +27,5 @@ Used by [[Search Home Movies]] to build the "watch at home" cards.
 
 ## Used by
 
-- [[Search Home Movies]] (`mcp_server.py:108`)
+- [[Search Home Movies]] (`mcp_server.py:127`)
 - Public MCP surface

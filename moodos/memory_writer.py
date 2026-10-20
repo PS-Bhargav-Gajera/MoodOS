@@ -147,9 +147,18 @@ def extract_durable_facts(message: str | None, slots: dict | None) -> list[dict]
 
     budget = slots.get("budget_inr")
     if isinstance(budget, (int, float)) and budget > 0:
-        band = "budget" if budget < 800 else ("mid" if budget < 2000 else "premium")
+        # budget_inr is the group total for a group outing; the durable
+        # preference is what THIS person likes to spend, so store per-head.
+        try:
+            party = max(1, int(float(slots.get("party_size") or 1)))
+        except (TypeError, ValueError):
+            party = 1
+        per_head = budget / party
+        band = "budget" if per_head < 800 else ("mid" if per_head < 2000 else "premium")
+        shown = int(per_head) if party > 1 else int(budget)
+        suffix = " per person" if party > 1 else ""
         facts.append({
-            "text": f"Comfortable spending around ₹{int(budget)} on an evening out ({band} band)",
+            "text": f"Comfortable spending around ₹{shown}{suffix} on an evening out ({band} band)",
             "category": "preference",
             "kind": "budget",
             "confidence": 0.6,

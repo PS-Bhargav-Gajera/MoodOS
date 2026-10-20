@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
+import threading
 from typing import Any
 
 from moodos.config import settings
 from moodos.llm import router
+
+log = logging.getLogger("moodos.nlu")
+
+# Extraction is the FIRST LLM call in /api/plan (orchestrator.run_pipeline),
+# so an unbudgeted extract blocks everything behind it -- worst case Groq
+# 25s + 7 Gemini models x 25s ~= 200s. Same pattern as
+# orchestrator._plan_with_budget: daemon thread + join, then fall back to the
+# instant heuristic slots, which are already a complete answer. The thread is
+# abandoned on overrun but every LLM leg is itself bounded by
+# llm.LLM_TIMEOUT_S (25s), so it cannot linger past that.
+EXTRACT_BUDGET_S = 8.0
 
 
 PLAN_HINTS = (
@@ -166,6 +179,8 @@ Return JSON keys:
 intent, current_mood, desired_mood, mood_intensity (low|medium|high),
 mood_trajectory (array of short steps),
 budget_inr (number or null), duration_hours (number or null),
+party_size (number or null — how many people the outing/budget covers,
+  e.g. "Rs5000 for 5 friends" -> 5; 1 or null for a solo outing),
 social (solo|friends|family|date|unknown), intensity (low|medium|high),
 city (string or null), implicit_preferences (array of strings),
 constraints (array of strings),
@@ -206,6 +221,18 @@ def heuristic_extract(message: str) -> dict[str, Any]:
     if "four hours" in text or "4 hours" in text:
         hours = 4.0
 
+    # Headcount for group outings: "Rs5000 for 5 friends", "5 of us",
+    # "a group of 6". budget_inr stays the GROUP total; consumers scale
+    # per-person cost estimates by party_size (see ranking.hard_filter).
+    party_size = None
+    pm = re.search(r"\b(\d{1,2})\s*(?:friends?|people|ppl|persons?|of us)\b", text)
+    if not pm:
+        pm = re.search(r"\b(?:family|group|party)\s+of\s+(\d{1,2})\b", text)
+    if pm:
+        n = int(pm.group(1))
+        if 1 < n <= 50:
+            party_size = n
+
     social = "solo" if any(w in text for w in ("alone", "solo", "by myself")) else "unknown"
     intensity = "low" if any(w in text for w in ("nothing intense", "exhausted", "tired", "low energy", "calm")) else "medium"
     current = "exhausted" if "exhaust" in text or "tired" in text else "neutral"
@@ -237,6 +264,7 @@ def heuristic_extract(message: str) -> dict[str, Any]:
         "mood_trajectory": [current, "calm", "light entertainment", desired],
         "budget_inr": budget,
         "duration_hours": hours,
+        "party_size": party_size,
         "social": social,
         "intensity": intensity,
         "city": settings.default_city,
@@ -252,11 +280,42 @@ def heuristic_extract(message: str) -> dict[str, Any]:
 
 
 def extract_intent(message: str) -> dict[str, Any]:
-    llm = router.extract_json(EXTRACT_PROMPT.format(message=message))
     base = heuristic_extract(message)
+    holder: dict[str, Any] = {}
+    failed: list[str] = []
+
+    def _run() -> None:
+        # A crashing LLM leg must not escape the thread: heuristic slots are
+        # a complete answer, so record why we got nothing and fall through.
+        try:
+            data = router.extract_json(EXTRACT_PROMPT.format(message=message))
+        except Exception as exc:  # noqa: BLE001 - any provider failure
+            failed.append(str(exc) or type(exc).__name__)
+            return
+        if data:
+            holder.update(data)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(EXTRACT_BUDGET_S)
+    llm = dict(holder)
     if not llm:
+        # "budget exceeded" is reserved for a REAL timeout: the thread is
+        # still running. Finished-with-nothing and raised are logged apart,
+        # so an instant empty answer can never look like an overrun.
+        if thread.is_alive():
+            log.warning(
+                "intent extraction budget exceeded (%.1fs); using heuristic slots",
+                EXTRACT_BUDGET_S,
+            )
+        elif failed:
+            log.warning(
+                "intent extraction raised; using heuristic slots: %s", failed[0]
+            )
+        else:
+            log.warning("LLM returned nothing; using heuristic slots")
         return base
-    _heuristic_numeric = {"duration_hours", "budget_inr"}
+    _heuristic_numeric = {"duration_hours", "budget_inr", "party_size"}
     merged = {**base, **{k: v for k, v in llm.items() if v not in (None, "", [])}}
     for k in _heuristic_numeric:
         if base.get(k) is not None:

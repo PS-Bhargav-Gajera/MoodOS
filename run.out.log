@@ -1,0 +1,41 @@
+INFO:     127.0.0.1:51886 - "GET /mcp/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51887 - "GET /mcp/resources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51888 - "GET /mcp/prompts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51889 - "GET /mcp/tools/get_weather HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60774 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60774 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60774 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "POST /api/location/resolve HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51986 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "GET /static/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49857 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49857 - "POST /api/location/resolve HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57870 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57870 - "GET /static/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56707 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57870 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57870 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:57870 - "POST /api/location/resolve HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57870 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64967 - "GET /api/restaurants?lat=23.126033858084888&lon=72.54102555818461&mood=happy+and+relaxed&limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54795 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63918 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63918 - "GET /static/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53631 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63918 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63918 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:63918 - "POST /api/location/resolve HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63918 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54080 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54133 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49838 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50024 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50064 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50091 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50126 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50175 - "POST /api/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50224 - "POST /api/plan HTTP/1.1" 200 OK

@@ -23,10 +23,10 @@ Groq is used for speed (many small structured calls). Gemini is used for the lon
 | RAG | Local TF-IDF over seed + acquired docs | Free |
 | Live weather | Open-Meteo | Free, no key |
 | Places | OpenStreetMap Nominatim | Free, no key |
-| Music | iTunes Search API | Free, no key |
+| Music | Spotify (live search; no fallback) | Free key |
 | Books | Google Books | Free, no key |
 | Movies (optional) | TMDB | Free key |
-| Movies (default) | Seed + mock `CinemaBookingProvider` | Free |
+| Movies (default) | TMDB now-playing + estimated showtimes | Free |
 | Web fallback | DuckDuckGo (`ddgs`) | Free |
 | Cache | File TTL (Redis-shaped) | Free |
 | App DB | SQLite | Free |
@@ -42,7 +42,7 @@ Copy `.env.example` to `.env` and paste the keys. Leave them blank to demo the p
 ## Run
 
 ```powershell
-cd $env:USERPROFILE\Projects\MoodOS
+cd <path-to>\MoodOS
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt

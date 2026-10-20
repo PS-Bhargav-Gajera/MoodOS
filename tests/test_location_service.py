@@ -5,6 +5,8 @@ no OSM-family API is contacted. Real routing falls back to estimates, which is
 exactly the production behaviour when OSRM is down.
 """
 
+import pytest
+
 from moodos.config import settings
 from moodos.location_service import LocationService, _parse_categories
 
@@ -294,11 +296,35 @@ def test_resolve_prefers_user_input_and_passes_accuracy(monkeypatch):
     assert res2.get("accuracy_m") is None
 
 
-def test_permission_denied_or_no_fix_falls_to_default(monkeypatch):
+def test_no_fix_falls_back_to_profile_and_says_so(monkeypatch):
+    """No GPS, no typed place, no IP -> the SAVED PROFILE location, announced.
+
+    The old contract silently invented "default city". The resolver now names
+    the source ("profile") and attaches a notice so the caller can tell the
+    user which location is being used.
+    """
     import moodos.location as loc
 
     monkeypatch.setattr(loc, "geocode_text", lambda *a, **k: None)
     monkeypatch.setattr(loc, "ip_location", lambda *a, **k: None)
     res = loc.resolve_location(lat=None, lon=None, user_label=None, ip=None)
-    assert res["source"] in {"default", "ip"}
+    assert res["source"] == "profile"
     assert res["lat"] is not None and res["lon"] is not None
+    assert res["notice"], "a profile fallback must tell the user which location it used"
+
+
+def test_no_fix_at_all_raises_instead_of_inventing_a_city(monkeypatch):
+    """Nothing usable and no saved profile -> a clear "location required" error.
+
+    NEVER default silently to any city. (c) only applies when a profile
+    location actually exists; without one the resolver must refuse.
+    """
+    import moodos.location as loc
+
+    monkeypatch.setattr(loc, "geocode_text", lambda *a, **k: None)
+    monkeypatch.setattr(loc, "ip_location", lambda *a, **k: None)
+    monkeypatch.setattr(loc, "_profile_location", lambda: None)
+    with pytest.raises(loc.LocationError) as exc:
+        loc.resolve_location(lat=None, lon=None, user_label=None, ip=None)
+    assert exc.value.code == "location_required"
+    assert "location" in exc.value.message.lower()

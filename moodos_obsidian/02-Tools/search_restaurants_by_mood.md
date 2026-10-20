@@ -5,7 +5,7 @@ tags: [moodos, tool, mcp]
 # Search Restaurants By Mood
 
 MCP tool `search_restaurants_by_mood` → `MoodOSMCPServer.search_restaurants_by_mood`
-(`moodos/mcp_server.py:134`).
+(`moodos/mcp_server.py:153`).
 
 ## Signature
 
@@ -13,14 +13,14 @@ MCP tool `search_restaurants_by_mood` → `MoodOSMCPServer.search_restaurants_by
 
 ## Behavior
 
-Maps a mood string to cuisines via `MOOD_CUISINE_MAP` (`providers.py:208`),
+Maps a mood string to cuisines via `MOOD_CUISINE_MAP` (`providers.py:397`),
 e.g. `calm` → `tea/bakery/coffee_shop`, `celebratory` → fine dining, `date` →
 italian/french. Searches the first 2 cuisines via
-`nearby_restaurants` (5 each), then fills remaining slots with generic nearby
-restaurants (`providers.py:459-500`). Results are tagged `mood_match` +
-`mood_vibe`.
+`nearby_restaurants` (5 each, `providers.py:667-676`), then fills remaining
+slots with generic nearby restaurants (`providers.py:679-688`). Results are
+tagged `mood_match` + `mood_vibe`.
 
-Unknown mood → falls back to the `happy` mapping (`providers.py:469`).
+Unknown mood → falls back to the `happy` mapping (`providers.py:659`).
 
 ## Connects to
 
