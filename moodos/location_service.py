@@ -253,14 +253,23 @@ class LocationService:
             return cached
 
         elements = self._overpass_elements(lat, lon, radius_m, cats)
+        # G1: fallback-sourced results are cached for 30 minutes instead of 6h.
+        ttl_seconds = 6 * 3600
         if elements is None:
             # P1b: Overpass failed (timeout, 502/429, breaker) — try the live
             # fallback provider for the same categories before giving up.
+            ttl_seconds = 30 * 60
             places = []
             for cat_name in cats:
                 fb_cat = _FALLBACK_CATEGORY.get(cat_name)
-                if fb_cat:
-                    places.extend(fallback_places(lat, lon, fb_cat, limit=limit))
+                if not fb_cat:
+                    continue
+                # G1: Nominatim rows carry no tags, so the institutional filter
+                # runs on the name alone — same policy as the Overpass path.
+                places.extend(
+                    p for p in fallback_places(lat, lon, fb_cat, limit=limit)
+                    if not _institutional_flag({}, p.get("title", ""))
+                )
             places = [p for p in places if p.get("category") in cats]
             if not places:
                 # A4: nothing live succeeded. Fall back to the 24h stale copy
@@ -289,7 +298,8 @@ class LocationService:
 
         # A4: the final result (Overpass or fallback) is cached for 6h, and a
         # 24h stale copy is kept so a total outage still serves real venues.
-        ttl_cache.set(key, places, ttl_seconds=6 * 3600)
+        # G1: fallback-sourced results are cached for 30 minutes instead.
+        ttl_cache.set(key, places, ttl_seconds=ttl_seconds)
         if places:
             ttl_cache.set(stale_key, places, ttl_seconds=24 * 3600)
         return places

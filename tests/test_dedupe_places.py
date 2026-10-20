@@ -47,11 +47,13 @@ def test_fallback_places_dedupes_same_id_and_nearby_name():
 
 
 def test_nearby_restaurants_dedupes_fallback_list(monkeypatch):
+    # G1 drops institutional-sounding names from the fallback path, so these
+    # use neutral restaurant names purely to exercise dedupe.
     rows = [
-        {"source_id": "F2", "name": "Law Canteen(F2)", "lat": 28.61390, "lon": 77.20900},
-        {"source_id": "F2", "name": "Law Canteen(F2)", "lat": 28.61390, "lon": 77.20900},
-        {"source_id": "F1", "name": "Pharma Canteen(F1)", "lat": 28.61410, "lon": 77.20900},
-        {"source_id": "F9", "name": "Pharma Canteen (F1)", "lat": 28.61412, "lon": 77.20902},
+        {"source_id": "S1", "name": "Saganwala Restaurant", "lat": 28.61390, "lon": 77.20900},
+        {"source_id": "S1", "name": "Saganwala Restaurant", "lat": 28.61390, "lon": 77.20900},
+        {"source_id": "C1", "name": "Chai Point", "lat": 28.61410, "lon": 77.20900},
+        {"source_id": "C2", "name": "Chai Point ", "lat": 28.61412, "lon": 77.20902},
     ]
     monkeypatch.setattr(fb, "_env_key_names", lambda: set())
     monkeypatch.setattr(fb, "_nominatim_search", lambda *a, **k: list(rows))
@@ -59,7 +61,7 @@ def test_nearby_restaurants_dedupes_fallback_list(monkeypatch):
 
     out = providers.nearby_restaurants(28.6139, 77.209, limit=10)
     titles = sorted(p["title"] for p in out)
-    assert titles == ["Law Canteen(F2)", "Pharma Canteen(F1)"], titles
+    assert titles == ["Chai Point", "Saganwala Restaurant"], titles
 
 
 def test_pool_dedupes_same_venue_from_places_and_restaurants():

@@ -189,4 +189,16 @@ n titles: 24
 - Full suite: `356 passed, 1 warning in 42.01s` (353 before, +3 new; none dropped).
 - Note: `tests/test_a4_cache.py` lives in `tests/` next to `tests/test_overpass.py`, so it is imported as `test_a4_cache` and does not hit the root-basename clash; the `--ignore=test_overpass.py` flag is still required for the same reason as before.
 
+### G1 fallback: institutional filter + 30-minute TTL
+- Test first: new `tests/test_g1_fallback.py`, all 5 FAILING before the change (`AssertionError: ['Law Canteen(F2)', 'Pharma Canteen(F1)', 'Saganwala Restaurant']` and `assert 21599.99 <= 1800`).
+- Edits after the failures were shown:
+  - `moodos/providers.py` `nearby_restaurants` fallback branch: every fallback row now passes `_institutional_flag({}, p["title"])` — Nominatim rows carry no tags, so the filter runs on the name alone, exactly as the Overpass path does at :682 with real tags. Applied before `_dedupe_places`. Its cache TTL is `30 * 60` instead of `6 * 3600`; the 24h stale twin is unchanged.
+  - `moodos/location_service.py` `search_nearby_places`: `ttl_seconds` is set to `6 * 3600` when Overpass responds and `30 * 60` when the fallback path is taken, then used for the single `ttl_cache.set`. The fallback rows are filtered the same way before being merged into `places`.
+  - `_institutional_flag` itself is untouched — it already accepts an empty dict and matches on the name, which is why the "Law Canteen(F2)" and "Pharma Canteen(F1)" fixtures are dropped with no change to the filter.
+- One D1 test needed updating as a consequence: `test_dedupe_places.py::test_nearby_restaurants_dedupes_fallback_list` used canteen names purely to exercise dedupe, which G1 now (correctly) drops. Renamed its fixtures to "Saganwala Restaurant" and "Chai Point" so it still exercises dedupe and nothing else. The other three tests in that file, which call `_dedupe_places` directly, are unaffected.
+- Test file: `tests/test_g1_fallback.py` -> `5 passed in 0.08s`. The two TTL tests read the real cache entry: a fallback-sourced result leaves `left <= 1800` (and `> 1700`), an Overpass-sourced one leaves `left > 6 * 3600 - 60`.
+- Full suite: `361 passed, 1 warning in 29.48s` (356 before, +5 new; none dropped).
+
+- [x] G1 fallback institutional filter + 30m TTL for fallback-sourced results
+
 - [x] A4 result cache (6h) + stale copy (24h) for search_nearby_places and nearby_restaurants

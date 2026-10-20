@@ -644,11 +644,18 @@ def nearby_restaurants(
         # P1b: Overpass failed (timeout, 502/429, breaker) — try the live
         # fallback provider for the same category before giving up. Lazy
         # import: fallback_places imports this module at load time.
+        # G1: the fallback provider (Nominatim) is less reliable than Overpass,
+        # so its results get a shorter TTL. The 24h stale twin is unchanged.
         from moodos.fallback_places import _dedupe_places, fallback_places
-        fb = _dedupe_places(fallback_places(lat, lon, "restaurant", limit=limit))
+        fb = _dedupe_places([
+            p for p in fallback_places(lat, lon, "restaurant", limit=limit)
+            # G1: Nominatim rows carry no tags, so the institutional filter
+            # runs on the name alone — same policy as the Overpass path.
+            if not _institutional_flag({}, p.get("title", ""))
+        ])
         if fb:
             result = fb[:limit]
-            ttl_cache.set(key, result, ttl_seconds=6 * 3600)
+            ttl_cache.set(key, result, ttl_seconds=30 * 60)
             ttl_cache.set(stale_key, result, ttl_seconds=24 * 3600)
             return result
         # A4: nothing live succeeded. Fall back to the 24h stale copy of the
