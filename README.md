@@ -23,8 +23,7 @@ Groq is used for speed (many small structured calls). Gemini is used for the lon
 | RAG | Local TF-IDF over seed + acquired docs | Free |
 | Live weather | Open-Meteo | Free, no key |
 | Places | OpenStreetMap Nominatim | Free, no key |
-| Music | iTunes Search API | Free, no key |
-| Books | Google Books | Free, no key |
+| Music | Spotify | Paid with Premium |
 | Movies (optional) | TMDB | Free key |
 | Movies (default) | Seed + mock `CinemaBookingProvider` | Free |
 | Web fallback | DuckDuckGo (`ddgs`) | Free |
