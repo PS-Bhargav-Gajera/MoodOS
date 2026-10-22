@@ -202,3 +202,22 @@ n titles: 24
 - [x] G1 fallback institutional filter + 30m TTL for fallback-sourced results
 
 - [x] A4 result cache (6h) + stale copy (24h) for search_nearby_places and nearby_restaurants
+
+### G2 normalize boundary: distance_label + institutional filter + name dedupe
+- Test first: new `tests/test_g2_normalize_boundary.py`, 3 of 4 FAILING before the change (`AssertionError: normalize_places must guarantee distance_label / assert None`; `assert ['Law Canteen(F2)', 'Pharma Canteen(F1)', 'Staff Cafeteria', ...] == ['Saganwala Restaurant', 'Chai Point']`; `Left contains one more item: 'Saganwala Restaurant'`).
+- Root cause from the live-plan report:
+  * No distance on cards: `static/app.js` `renderRestaurantCard` shows `r.distance_label` or falls back to a bare pin, and `geo.normalize_places` never set the key - so every Overpass-sourced row (the default path; no Geoapify key in `.env`) rendered as a pin.
+  * Canteens on the panel despite G1: cache hits in `search_nearby_places`/`nearby_restaurants` return before any source-side filter, so rows cached pre-G1 (6h fresh / 24h stale copy) still surfaced "Law Canteen(F2)".
+  * Duplicates: the plan path is deduped by `_dedupe_pool` in the orchestrator, but two OSM rows for one venue (same name within 100 m) passed straight through `normalize_places`, which the `/api/restaurants` button path uses undeduped.
+- Edit after the failures were shown - `moodos/geo.py` `normalize_places` only (the single place-result contract, used by `find_nearby_places`, `search_restaurants`, `search_restaurants_by_mood`, `find_restaurants_by_cuisine` in `mcp_server.py`):
+  * lazy `from moodos.providers import _institutional_flag` + `from moodos.fallback_places import _dedupe_places` inside the function body (`providers` imports `geo` at module level, so a top-level import would cycle);
+  * rows whose name trips `_institutional_flag({}, name)` are dropped after name resolution - this re-runs the G1 filter at the boundary, catching stale-cache rows no source-side filter ever sees;
+  * each row gains `distance_label`: a provider-supplied one is preserved verbatim, otherwise computed as `0.4 km` / `12 km` (the fallback `_fmt_km` format the panel already displays);
+  * the loop result passes through the existing `_dedupe_places` (same normalized name within 100 m or same `source_id`) before the existing nearest-first sort and `limit` slice;
+  * module docstring contract line updated: `distance_label` guaranteed, institutional filter, dedupe.
+- Radius was already enforced here (`radius_km` filter + `mcp.search_restaurants` passes `radius_m/1000`), so "in a range or particular radius" only needed the distance display half of the ask.
+- Test file: `tests/test_g2_normalize_boundary.py` -> `4 passed in 0.17s`.
+- Full suite: `365 passed, 1 warning in 57.90s` (361 before, +4 new; none dropped - includes the pre-existing normalize contract tests in `tests/test_location_priority.py`, which use unique non-institutional names and assert field subsets, so the additive key and the two filters break nothing).
+- Note: the dev server still runs code from before R1..G1 (restarted once, mid-session), so the live UI keeps showing the reported bugs until it is restarted.
+
+- [x] G2 normalize boundary (distance_label + institutional filter + dedupe)

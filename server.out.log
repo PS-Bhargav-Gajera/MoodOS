@@ -1,7 +1,0 @@
-INFO:     127.0.0.1:63221 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64235 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:61880 - "GET /static/app.js HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64235 - "GET /static/styles.css HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64235 - "GET /api/health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:64235 - "GET /favicon.ico HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:64235 - "POST /api/location/resolve HTTP/1.1" 200 OK

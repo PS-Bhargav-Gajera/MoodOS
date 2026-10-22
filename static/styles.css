@@ -1127,3 +1127,90 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; }
   .tools-table { display: block; overflow-x: auto; white-space: nowrap; }
   .action-row .btn-action { flex: 1 1 100%; }
 }
+
+/* Live Terminal View in Browser */
+.btn-terminal {
+  background: rgba(30, 30, 30, 0.08);
+  border: 1px solid var(--border-2);
+  color: var(--text-b);
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+.btn-terminal:hover {
+  background: rgba(30, 30, 30, 0.16);
+  border-color: var(--text-b);
+}
+.terminal-card {
+  margin-top: 14px;
+  background: #111418;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  animation: fadeIn 0.3s ease;
+}
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #1c2128;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.terminal-dots {
+  display: flex;
+  gap: 6px;
+}
+.terminal-dots .dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.terminal-dots .dot.red { background: #ff5f56; }
+.terminal-dots .dot.yellow { background: #ffbd2e; }
+.terminal-dots .dot.green { background: #27c93f; }
+.terminal-title {
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.terminal-clear {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #8b949e;
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.terminal-clear:hover {
+  color: #fff;
+  border-color: #fff;
+}
+.terminal-screen {
+  padding: 14px 16px;
+  height: 280px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e6edf3;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.terminal-line-client { color: #58a6ff; font-weight: bold; }
+.terminal-line-tool { color: #d2a8ff; }
+.terminal-line-result { color: #7ee787; }
+.terminal-line-step { color: #79c0ff; }
+.terminal-line-error { color: #ff7b72; font-weight: bold; }
+.terminal-line-done { color: #56d364; font-weight: bold; }

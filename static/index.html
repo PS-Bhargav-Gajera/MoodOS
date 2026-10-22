@@ -55,7 +55,20 @@
           <option>/weekend-plan</option>
         </select>
         <button id="go" class="btn-send" type="button">Send</button>
+        <button id="toggle-terminal" class="btn-terminal" type="button" title="View live MCP communication terminal">📟 Live Terminal</button>
       </div>
+    </div>
+    <div id="terminal-card" class="terminal-card hidden">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+        </div>
+        <span class="terminal-title">LIVE MCP COMMUNICATION: Client ↔ Orchestrator ↔ MCP Tools</span>
+        <button id="terminal-clear" class="terminal-clear" type="button">Clear</button>
+      </div>
+      <div id="terminal-screen" class="terminal-screen"></div>
     </div>
     <div class="input-hint">Questions like “where am I?” or “what’s the weather?” get a short reply. Mood + budget + time still builds a plan with distances.</div>
   </div>

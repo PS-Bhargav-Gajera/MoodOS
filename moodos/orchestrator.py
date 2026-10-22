@@ -2263,7 +2263,13 @@ def run_pipeline(
         "resolved location: lat=%.4f lon=%.4f → %s",
         lat, lon, location
     )
+    from moodos.terminal_stream import terminal_bus
+    terminal_bus.log_step("nlu", "Extracting mood intent & constraints from message...")
     slots = extract_intent(message)
+    terminal_bus.log_step(
+        "nlu-done",
+        f"Mood: {slots.get('current_mood')} -> {slots.get('desired_mood')} | Budget: ₹{slots.get('budget_inr')} | Time: {slots.get('duration_hours')}h"
+    )
     user_typed_city = (
         resolved_meta.get("source") in {"user", "user-input"}
         and bool((resolved_meta.get("city") or "").strip())
@@ -2431,6 +2437,10 @@ def run_pipeline(
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    terminal_bus.log_step(
+        "parallel-mcp",
+        f"Dispatching {len(tasks)} MCP lookups in parallel (places, music, books, movies, restaurants, cinemas)..."
+    )
     results: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
         futures = {ex.submit(fn): name for name, fn in tasks.items()}
@@ -2543,6 +2553,7 @@ def run_pipeline(
     ranked = rerank(sorted(filtered, key=lambda x: x["final_score"], reverse=True))
     decisions.append({"diamond": "Is the candidate sufficiently compatible?", "answer": bool(ranked)})
 
+    terminal_bus.log_step("llm-planner", "Synthesizing personalized experience plan via LLM router...")
     plan_prompt = PLAN_PROMPT.format(
         slots=slots,
         memory=_memory_block(memories),
@@ -2571,6 +2582,11 @@ def run_pipeline(
         plan["explanation"] = (plan.get("explanation") or "") + mv_note
     _remember_suggestions(plan)
     _record_shown_items(plan, user_id)
+
+    step_count = len(plan.get("steps") or [])
+    cost = plan.get("total_cost_inr", 0)
+    mins = plan.get("total_duration_min", 0)
+    terminal_bus.log_step("plan-ready", f"Generated {step_count}-step plan (est. ₹{cost}, {mins} mins)")
 
     reviews = []
     for item in ranked[:4]:

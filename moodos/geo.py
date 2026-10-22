@@ -124,10 +124,15 @@ def normalize_places(
     """Shape provider rows into the contract every place tool returns.
 
     Guarantees on each row: `name`, `address`, `lat`, `lon`, `distance_km`,
-    `source`. Rows without usable coordinates are dropped rather than shipped
-    with a null position, rows outside `radius_km` are filtered out, and the
-    list is sorted nearest-first.
+    `distance_label`, `source`. Rows without usable coordinates are dropped
+    rather than shipped with a null position, institutional/staff-only venues
+    (canteens etc.) are dropped even when they arrive via a stale cache, the
+    same venue returned twice within 100 m is kept once, rows outside
+    `radius_km` are filtered out, and the list is sorted nearest-first.
     """
+    from moodos.fallback_places import _dedupe_places  # lazy: cycle via providers
+    from moodos.providers import _institutional_flag
+
     origin_lat, origin_lon = validate_coords(lat, lon, where="place search origin")
     out: list[dict[str, Any]] = []
     for raw in items or []:
@@ -145,6 +150,8 @@ def normalize_places(
         name = str(raw.get("name") or raw.get("title") or "").strip()
         if not name:
             continue
+        if _institutional_flag({}, name):  # cache hits skip the source-side filter
+            continue
 
         distance = _as_float(raw.get("distance_km"))
         if distance is None:
@@ -154,6 +161,9 @@ def normalize_places(
             continue
 
         address = raw.get("address")
+        label = str(raw.get("distance_label") or "").strip()
+        if not label:
+            label = f"{distance:.1f} km" if distance < 10 else f"{int(round(distance))} km"
         out.append({
             **raw,
             "name": name,
@@ -162,9 +172,11 @@ def normalize_places(
             "lat": plat,
             "lon": plon,
             "distance_km": distance,
+            "distance_label": label,
             "source": str(raw.get("source") or "unknown"),
         })
 
+    out = _dedupe_places(out)
     out.sort(key=lambda p: p["distance_km"])
     if limit is not None:
         out = out[: max(1, int(limit))]

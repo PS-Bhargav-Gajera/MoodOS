@@ -675,6 +675,7 @@ $("go").onclick = async () => {
   $("status").classList.add("busy");
   $("go").disabled = true;
   $("result").classList.add("hidden");
+  if ($("terminal-card")) $("terminal-card").classList.remove("hidden");
   // Everything the catch/finally below touches is declared up front so any
   // failure — even one before the request is built — still lands in catch.
   let timer = null;
@@ -748,7 +749,65 @@ $("go").onclick = async () => {
   }
 };
 
+// --- Live Terminal Monitor in Browser ---------------------------------------
+function setupLiveTerminal() {
+  const toggleBtn = $("toggle-terminal");
+  const card = $("terminal-card");
+  const screen = $("terminal-screen");
+  const clearBtn = $("terminal-clear");
+
+  if (toggleBtn && card) {
+    toggleBtn.onclick = () => {
+      card.classList.toggle("hidden");
+    };
+  }
+  if (clearBtn && screen) {
+    clearBtn.onclick = () => {
+      screen.innerHTML = "";
+    };
+  }
+
+  function appendTerminal(line, className = "") {
+    if (!screen) return;
+    const p = document.createElement("div");
+    if (className) p.className = className;
+    p.textContent = line;
+    screen.appendChild(p);
+    screen.scrollTop = screen.scrollHeight;
+  }
+
+  try {
+    const es = new EventSource("/api/live-terminal/stream");
+    es.onmessage = (e) => {
+      if (!e.data) return;
+      try {
+        const item = JSON.parse(e.data);
+        const t = item.time || "";
+        if (item.type === "client_send") {
+          appendTerminal(`\n[${t}] >>> [USER ACTION: CLICKED SEND] Request sent to ${item.endpoint}`, "terminal-line-client");
+          appendTerminal(`       Message: "${item.message}"`, "terminal-line-client");
+          appendTerminal(`       Location: ${item.location}`, "terminal-line-client");
+          if (item.prompt) appendTerminal(`       Workflow: ${item.prompt}`, "terminal-line-client");
+        } else if (item.type === "tool_call") {
+          appendTerminal(`  --> [${t}] [ORCHESTRATOR -> MCP] Calling Tool: ${item.tool}(${item.args})`, "terminal-line-tool");
+        } else if (item.type === "tool_result") {
+          const cls = item.is_error ? "terminal-line-error" : "terminal-line-result";
+          appendTerminal(`  <-- [${t}] [MCP -> ORCHESTRATOR] Tool ${item.tool} finished (${item.elapsed_ms.toFixed(1)}ms): ${item.summary}`, cls);
+        } else if (item.type === "step") {
+          appendTerminal(`  [*] [${t}] [${item.step.toUpperCase()}] ${item.detail}`, "terminal-line-step");
+        } else if (item.type === "response_sent") {
+          appendTerminal(`\n[${t}] <<< [SERVER -> CLIENT] Response Ready (${item.status_code} OK | ${item.elapsed_s.toFixed(2)}s)`, "terminal-line-done");
+          appendTerminal(`       Summary: ${item.summary}\n`, "terminal-line-done");
+        }
+      } catch (err) {}
+    };
+  } catch (err) {
+    console.warn("Live terminal SSE connection error:", err);
+  }
+}
+
 health();
+setupLiveTerminal();
 
 if ($("loc")) {
   let locTimer = null;

@@ -5,6 +5,7 @@ External APIs are providers behind these tools — they are not MCP servers.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from moodos import actions, providers
@@ -63,11 +64,43 @@ class MoodOSMCPServer:
             "/stress-relief",
             "/movie-night",
         ]
+        from moodos.weather_mcp import weather_mcp_client, weather_mcp_server
+        self.weather_server = weather_mcp_server
+        self.weather_client = weather_mcp_client
+
+    def tool(self, name: str | None = None, description: str | None = None) -> Callable:
+        """Decorator to register a function as an MCP tool on this server:
+
+        @mcp.tool()
+        def custom_action(lat: float, lon: float) -> dict:
+            ...
+        """
+        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+            tool_name = name or fn.__name__
+            if description and not fn.__doc__:
+                fn.__doc__ = description
+            self.tools[tool_name] = fn
+            return fn
+        return decorator
 
     def call(self, name: str, **kwargs: Any) -> Any:
         if name not in self.tools:
             raise KeyError(f"Unknown MCP tool: {name}")
-        return self.tools[name](**kwargs)
+        from moodos.terminal_stream import terminal_bus
+
+        args_str = terminal_bus.format_args(kwargs)
+        terminal_bus.log_tool_call(name, args_str)
+        t0 = time.perf_counter()
+        try:
+            res = self.tools[name](**kwargs)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            summary = terminal_bus.format_result(name, res)
+            terminal_bus.log_tool_result(name, elapsed_ms, summary, is_error=False)
+            return res
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            terminal_bus.log_tool_result(name, elapsed_ms, str(exc), is_error=True)
+            raise
 
     # --- schema ------------------------------------------------------------
     # A hand-rolled registry (there is no MCP SDK in this project), so the

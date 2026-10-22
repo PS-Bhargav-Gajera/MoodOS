@@ -22,6 +22,7 @@ from moodos.location import resolve_location
 from moodos.llm import router
 from moodos.memory import mem0
 from moodos.mcp_server import mcp
+from moodos.weather_mcp import weather_mcp_client, weather_mcp_server
 from moodos.orchestrator import handle_message
 
 ROOT = Path(__file__).resolve().parent
@@ -172,6 +173,19 @@ def health() -> dict:
 def plan(req: PlanRequest, request: Request, background: BackgroundTasks) -> dict:
     if not req.message.strip():
         raise HTTPException(400, "message required")
+    from moodos.terminal_stream import terminal_bus
+    import time
+    t0 = time.perf_counter()
+    typed = (req.user_label or "").strip() or (req.city or "").strip()
+    terminal_bus.log_client_send(
+        req.message.strip(),
+        user_id=req.user_id,
+        lat=req.lat,
+        lon=req.lon,
+        user_label=typed or None,
+        prompt=req.prompt,
+        endpoint="/api/plan",
+    )
     # Crisis check BEFORE resolve_location: a person in crisis must never get
     # a location error (409/428) or wait on a geocode lookup. One shared
     # helper (moodos.crisis) — no copy-pasted phrase lists.
@@ -227,6 +241,16 @@ def plan(req: PlanRequest, request: Request, background: BackgroundTasks) -> dic
         # Fire-and-forget AFTER the response is built, so a slow/failed Mem0
         # call can never delay or break the plan the user is waiting on.
         background.add_task(_remember_suggestions_bg, req.user_id, bundle)
+
+    elapsed_s = time.perf_counter() - t0
+    mode = bundle.get("mode", "plan") if isinstance(bundle, dict) else "unknown"
+    if mode == "chat":
+        summary = f"Direct answer: {(bundle.get('reply') or '')[:80]}..."
+    else:
+        steps_len = len((bundle.get("plan") or {}).get("steps") or [])
+        weather_cond = (bundle.get("weather") or {}).get("condition", "unknown")
+        summary = f"{steps_len} steps planned, weather: {weather_cond}"
+    terminal_bus.log_response_sent(200, elapsed_s, summary, mode=mode)
     return bundle
 
 
@@ -453,6 +477,102 @@ def mcp_tool_schema(name: str) -> dict:
     if name not in mcp.tools:
         raise HTTPException(404, f"Unknown MCP tool: {name}")
     return mcp.tool_schema(name)
+
+
+# --- Open-Meteo Weather MCP Endpoints ----------------------------------------
+
+@app.post("/mcp/weather")
+def mcp_weather_jsonrpc(payload: dict) -> dict:
+    """Standard Model Context Protocol JSON-RPC 2.0 handler for Open-Meteo Weather."""
+    return weather_mcp_server.handle_jsonrpc(payload)
+
+
+@app.get("/mcp/weather/tools")
+def mcp_weather_tools() -> dict:
+    """List tools with their schemas provided by the Open-Meteo Weather MCP Server."""
+    return {"tools": weather_mcp_server.list_tools()}
+
+
+@app.post("/mcp/weather/call")
+def mcp_weather_call(payload: dict) -> dict:
+    """Execute a Weather MCP tool directly by name."""
+    tool_name = payload.get("tool") or payload.get("name")
+    if not tool_name:
+        raise HTTPException(400, "Missing 'tool' or 'name' in request body")
+    arguments = payload.get("arguments") or payload.get("args") or {}
+    try:
+        res = weather_mcp_server.call_tool(tool_name, arguments)
+        return {"ok": True, "tool": tool_name, "result": res}
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"Tool execution failed: {exc}")
+
+
+@app.get("/api/weather/current")
+def api_weather_current(lat: float, lon: float) -> dict:
+    """REST endpoint for current weather conditions via Open-Meteo Weather MCP."""
+    return weather_mcp_client.get_current_weather(lat=lat, lon=lon)
+
+
+@app.get("/api/weather/forecast")
+def api_weather_forecast(lat: float, lon: float, days: int = 7) -> dict:
+    """REST endpoint for multi-day weather forecast via Open-Meteo Weather MCP."""
+    return weather_mcp_client.get_forecast(lat=lat, lon=lon, days=days)
+
+
+@app.get("/api/weather/hourly")
+def api_weather_hourly(lat: float, lon: float, hours: int = 24) -> dict:
+    """REST endpoint for hourly weather forecast via Open-Meteo Weather MCP."""
+    return weather_mcp_client.get_hourly(lat=lat, lon=lon, hours=hours)
+
+
+@app.get("/api/weather/activity")
+def api_weather_activity(lat: float, lon: float, activity: str = "outdoor_walk") -> dict:
+    """REST endpoint to evaluate weather suitability for an intended activity."""
+    return weather_mcp_client.evaluate_activity(lat=lat, lon=lon, activity=activity)
+
+
+# --- Live Terminal Stream Endpoints ------------------------------------------
+
+@app.get("/api/live-terminal/stream")
+async def live_terminal_stream():
+    """SSE endpoint streaming live terminal events to watching terminal clients or UI."""
+    import asyncio
+    import json
+    from fastapi.responses import StreamingResponse
+    from moodos.terminal_stream import terminal_bus
+
+    async def event_generator():
+        q = terminal_bus.subscribe()
+        try:
+            # Replay recent history so new viewers get context
+            for old in terminal_bus.get_history():
+                yield f"data: {json.dumps(old)}\n\n"
+            while True:
+                item = await q.get()
+                yield f"data: {json.dumps(item)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            terminal_bus.unsubscribe(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/live-terminal/history")
+def live_terminal_history():
+    from moodos.terminal_stream import terminal_bus
+    return {"history": terminal_bus.get_history()}
+
 
 
 @app.get("/api/journal")
